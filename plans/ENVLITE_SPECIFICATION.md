@@ -104,6 +104,26 @@ A green phpunit + a 2xx/3xx HTTP status proves the same thing the old
 | 3 | Preflight (Phase 0) failed — environment does not satisfy envlite's preconditions. |
 | 5 | User declined a destructive prompt. envlite aborted cleanly. |
 
+### Diagnostic output
+
+All diagnostic output goes to stderr. Stdout is reserved for content
+that is meaningful as data (currently: nothing; envlite has no
+data-producing subcommand). Every stderr line uses one of two prefixes:
+
+- `envlite: <message>` — for top-level errors before a subcommand has
+  taken control (unknown subcommand, missing CWD checks, preflight
+  failures).
+- `envlite <subcommand>: <message>` — once a subcommand is running, all
+  errors and warnings carry the subcommand name (e.g.
+  `envlite init: phase 5: SHA256 mismatch on plugin zip`,
+  `envlite serve: failed to bind 127.0.0.1:8421`).
+
+Phase failures inside `init` use `envlite init: phase N: <cause>`.
+Prompts (interactive, on stderr) and the non-TTY abort line both follow
+the `envlite <subcommand>: ...` form. envlite never writes timestamps,
+log levels, or ANSI color codes to stderr — the convention is plain
+single-line messages an aggregator can grep.
+
 ---
 
 ## Phase 0 — Preflight
@@ -700,6 +720,23 @@ writer. A SIGINT mid-operation leaves either fully-pre-write or
 fully-post-write state on disk; no half-written file claims a hash for
 content that wasn't durable.
 
+**File-write conventions.** All envlite-authored text files
+(`router.php`, `src/wp-config.php`, `wp-tests-config.php`,
+`src/wp-content/db.php`, `.envlite/port`, `.envlite/manifest`) are
+written as raw bytes with:
+
+- LF (`\n`) line endings only — never CRLF, even on Windows. Hard-code
+  `"\n"` in source; never use `PHP_EOL` for envlite-authored content.
+- No UTF-8 BOM.
+- A single trailing newline.
+
+Use `file_put_contents()` (which writes raw bytes by default) on the
+`.tmp` path. Never open a stream in PHP's text mode (`'t'` flag);
+binary mode is the default and the only correct mode here. This keeps
+content hashes byte-identical across platforms, so a re-run or a
+checkout opened on a different OS does not see spurious manifest
+drift.
+
 **Ownership decisions** (consulted by Phases 5–8):
 
 - Path in manifest **and** current content hash matches → envlite owns
@@ -888,5 +925,11 @@ explicit user assent. Users who want a fully clean slate run
   `clean`. Use `git clean -fdx` or your usual tooling.
 - Override Composer's cache or home directory. envlite does not set
   `COMPOSER_HOME`; Composer's default applies.
+- Refresh the pinned SQLite drop-in. There is no `envlite update`
+  subcommand. To pick up a newer plugin release, edit the SHA256 pin
+  (and any associated logic) in `tools/local-env/envlite.php`, then
+  run `envlite clean && envlite init`. The pin is intentional: bumping
+  it is a deliberate envlite revision, reviewed and committed
+  alongside any code adjustments the new release requires.
 - Manage worktrees. envlite operates on whatever directory it is
   invoked in.
