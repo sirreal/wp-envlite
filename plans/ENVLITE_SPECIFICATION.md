@@ -37,9 +37,11 @@ plus the host `php` itself when launching the dev server.
 
 ### Invocation
 
-envlite is a single PHP file located at
-`tools/local-env/envlite.php` in the wordpress-develop checkout. The
-canonical (and only supported) invocation form is:
+envlite is implemented as a PHP script at
+`tools/local-env/envlite.php` in the wordpress-develop checkout, with
+a small router asset at `tools/local-env/router.php` that
+`envlite serve` loads into PHP's built-in dev server. The canonical
+(and only supported) invocation form is:
 
 ```
 $ php tools/local-env/envlite.php <subcommand> [args...]
@@ -124,6 +126,35 @@ the `envlite <subcommand>: ...` form. envlite never writes timestamps,
 log levels, or ANSI color codes to stderr — the convention is plain
 single-line messages an aggregator can grep.
 
+### `envlite serve` runtime
+
+`serve` reads the port from `.envlite/port` and `proc_open`s
+`php -S 127.0.0.1:<port> -t src tools/local-env/router.php` in the
+foreground. The router is committed at `tools/local-env/router.php`
+alongside `envlite.php`; it is not installed into the repo, the
+manifest does not track it, and `clean` does not remove it. It has
+no inputs (the port is a `php -S` argument, not baked into the file)
+and no user-tunable knobs. Before spawning `php -S`, `serve` checks
+the router asset exists; if missing, it exits 1 with
+`envlite serve: router asset missing at <path> (reinstall envlite)`.
+
+The router resolves the repo's `src/` via
+`dirname(__DIR__, 2) . '/src'`, returns `false` for files that exist
+on disk so `php -S` serves them directly, and otherwise routes to
+`src/index.php`. WordPress's index.php → wp-blog-header.php →
+wp-load.php → wp-settings.php chain handles the rest, including
+`wp-admin/install.php` on first hit and pretty-permalink fallback
+once installed. The router must be a regular file inside the
+checkout — symlinking it elsewhere breaks `dirname(__DIR__, 2)`
+docroot resolution. The port is consumed only when `serve` runs,
+never at `init` time.
+
+**Bind failure.** If `php -S` exits because the port is already
+bound (another `envlite serve` running, or any other process on
+`<port>`), envlite exits 1 with a single stderr line:
+`envlite serve: failed to bind 127.0.0.1:<port>`. No manifest
+mutation occurs.
+
 ---
 
 ## Phase 0 — Preflight
@@ -131,7 +162,7 @@ single-line messages an aggregator can grep.
 > envlite tracks every file it writes in `.envlite/manifest` and never
 > overwrites or deletes anything it doesn't demonstrably own without
 > prompting first. See the **State and ownership** section below the
-> phases for the full contract — it shapes Phases 5–8 and `clean`.
+> phases for the full contract — it shapes Phases 5–7 and `clean`.
 
 **Purpose:** abort early if the environment cannot satisfy envlite's
 assumptions. Cheap to run and informative on failure.
@@ -509,10 +540,9 @@ SQLite drop-in ignores it, but `wpdb` still requires it to be defined.
 
 ## Phase 7 — Runtime configuration (`src/wp-config.php`)
 
-**Purpose:** create the runtime config that the dev server (Phase 8)
-will load. Distinct from Phase 6: `src/wp-config.php` is loaded by
-`wp-load.php`; `wp-tests-config.php` is loaded only by phpunit's
-bootstrap.
+**Purpose:** create the runtime config that the dev server will load.
+Distinct from Phase 6: `src/wp-config.php` is loaded by `wp-load.php`;
+`wp-tests-config.php` is loaded only by phpunit's bootstrap.
 
 **Operation:** in PHP:
 
@@ -571,64 +601,12 @@ phpunit config doesn't care.
 
 ---
 
-## Phase 8 — Web server router
-
-**Purpose:** provide the routing script that `envlite serve` (and `php -S`
-generally) needs to make `src/` runnable with WordPress's pretty-permalink
-semantics intact.
-
-**Operation:** write `router.php` at the repo root. Content (verbatim):
-
-```php
-<?php
-$path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-$file = __DIR__ . '/src' . $path;
-if ($path !== '/' && file_exists($file) && !is_dir($file)) {
-    return false;
-}
-require __DIR__ . '/src/index.php';
-```
-
-**Inputs:** none. (The port is not baked into `router.php`; it's a
-runtime argument to `php -S`, supplied by `envlite serve`.)
-**Outputs:** `router.php`.
-
-**How `envlite serve` uses it:** the subcommand `proc_open`s
-`php -S 127.0.0.1:<port> -t src router.php` in the foreground, where
-`<port>` is read from `.envlite/port`. The router is a fixed file; the
-port lives in the cache.
-
-**Bind failure on `envlite serve`:** if `php -S` exits because the port
-is already bound (another `envlite serve` running, or any other process
-on `<port>`), envlite exits 1 with a single stderr line:
-`envlite serve: failed to bind 127.0.0.1:<port>`. No manifest mutation
-occurs.
-
-**How the router works:** `php -S`'s built-in static-file handling
-returns `false` from the router for files that exist on disk (letting
-the server serve them), and otherwise routes to `src/index.php`.
-WordPress's index.php → wp-blog-header.php → wp-load.php →
-wp-settings.php chain handles the rest, including
-`wp-admin/install.php` redirects on first hit and pretty-permalink
-fallback once installed.
-
-**Idempotency:** `router.php` has no user-tunable knob in it; preserving
-manual edits would mean a user who tweaked it for an unrelated experiment
-never gets envlite's bug fixes.
-
-- Path absent → write, record.
-- Path present, in manifest → silent overwrite (always pick up the
-  current canonical content).
-- Path present, **not** in manifest → prompt before overwriting.
-
----
-
 ## State and ownership
 
 These two sections describe envlite's contract with the filesystem.
 They are policy for what the phases above do, not phases themselves;
 the placement here is so the reader has the concrete file-by-file
-picture from Phases 0–8 in mind before evaluating the abstract rules.
+picture from Phases 0–7 in mind before evaluating the abstract rules.
 
 ### Destructive operations and prompts
 
@@ -658,7 +636,7 @@ actionable signal, not silent failure.
 **Operations that prompt unless `--force` is passed:**
 
 - Overwriting a file that exists on disk and is **not** recorded in the
-  manifest as envlite-owned. (Phases 5–8.)
+  manifest as envlite-owned. (Phases 5–7.)
 - Overwriting a file that **is** in the manifest but whose current
   content hash has drifted from the recorded hash.
 - Deleting any file or directory in `clean`. The default form prompts
@@ -711,7 +689,7 @@ path should run `envlite clean` and re-`init`. (`clean` doesn't touch
 parts survive a clean+init cycle.)
 
 **Atomic writes.** Every file envlite writes — whether content
-(`router.php`, `wp-config.php`, etc.) or the manifest itself — uses the
+(`wp-config.php`, `wp-tests-config.php`, etc.) or the manifest itself — uses the
 write-temp + fsync + rename pattern: hash the in-memory bytes
 (`hash('sha256', $bytes)`), write them to a sibling `.tmp` path, fsync,
 `rename()` over the final path. The manifest entry update uses the
@@ -723,9 +701,8 @@ fully-post-write state on disk; no half-written file claims a hash for
 content that wasn't durable.
 
 **File-write conventions.** All envlite-authored text files
-(`router.php`, `src/wp-config.php`, `wp-tests-config.php`,
-`src/wp-content/db.php`, `.envlite/port`, `.envlite/manifest`) are
-written as raw bytes with:
+(`src/wp-config.php`, `wp-tests-config.php`, `src/wp-content/db.php`,
+`.envlite/port`, `.envlite/manifest`) are written as raw bytes with:
 
 - LF (`\n`) line endings only — never CRLF, even on Windows. Hard-code
   `"\n"` in source; never use `PHP_EOL` for envlite-authored content.
@@ -739,7 +716,7 @@ content hashes byte-identical across platforms, so a re-run or a
 checkout opened on a different OS does not see spurious manifest
 drift.
 
-**Ownership decisions** (consulted by Phases 5–8):
+**Ownership decisions** (consulted by Phases 5–7):
 
 - Path in manifest **and** current content hash matches → envlite owns
   it; safe to silently re-stamp.
@@ -769,7 +746,6 @@ src/wp-content/plugins/sqlite-database-integration/      (Phase 5)
 src/wp-content/db.php                                    (Phase 5)
 wp-tests-config.php                                      (Phase 6)
 src/wp-config.php                                        (Phase 7)
-router.php                                               (Phase 8)
 src/wp-content/database/.ht.sqlite                       (created on demand; observation-recorded — see below)
 ```
 
@@ -815,8 +791,6 @@ Strict dependency graph:
 
 - Phase 0 → all subsequent phases.
 - Phase 1 → Phase 7 (port is consumed by `WP_HOME`, `WP_SITEURL`).
-  Phase 8 does not consume the port; only `envlite serve` does, at
-  invocation time.
 - Phase 2 → Phase 3 (`build:dev` needs `node_modules/`).
 - Phase 5 → Phase 6 and Phase 5 → Phase 7. Both config files assume
   the SQLite drop-in is the active DB layer at any moment between
@@ -857,7 +831,6 @@ Phase-specific notes:
 | 5 (SQLite drop-in) | Skips download if the local plugin's `db.copy` is present; copies `db.copy` → `db.php` either way. |
 | 6 (`wp-tests-config.php`) | Manifest contract above. |
 | 7 (`src/wp-config.php`) | Manifest contract above. Re-stamp interpolates the current Phase 1 port. |
-| 8 (`router.php`) | Manifest contract above. |
 
 `envlite init` is safe to re-run on a half-configured repo: paths
 envlite owns get refreshed silently, paths it doesn't own require
