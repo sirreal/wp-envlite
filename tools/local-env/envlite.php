@@ -663,8 +663,70 @@ function envlite_main(array $argv): int {
 }
 
 function envlite_cmd_init(array $args, bool $force): int {
-    envlite_log('init', 'not implemented');
-    return 1;
+    $port = null;
+    $noBuild = false;
+    foreach ($args as $a) {
+        if ($a === '--no-build') { $noBuild = true; continue; }
+        if (preg_match('/^--port=(\d+)$/', $a, $m)) {
+            $port = (int) $m[1];
+            if ($port < 1 || $port > 65535) {
+                envlite_log('init', "invalid --port value: $a");
+                return 2;
+            }
+            continue;
+        }
+        envlite_log('init', "unknown argument: $a");
+        return 2;
+    }
+
+    $repoRoot = getcwd();
+
+    // Phase 0
+    envlite_phase0_run($repoRoot);
+
+    // Observation point: record .ht.sqlite if present and not in manifest.
+    envlite_observe_ht_sqlite($repoRoot);
+
+    // Phase 1
+    $resolvedPort = envlite_phase1_discover_port($repoRoot, $port);
+    fwrite(STDERR, "envlite init: port $resolvedPort\n");
+
+    // Phase 2: npm ci
+    envlite_phase2_npm_ci($repoRoot);
+
+    // Phase 3: build:dev (skippable)
+    if (!$noBuild) {
+        envlite_phase3_build_dev($repoRoot);
+    }
+
+    // Phase 4: composer install
+    envlite_phase4_composer_install($repoRoot);
+
+    // Phase 5: SQLite drop-in (must precede 6 and 7)
+    envlite_phase5_install($repoRoot, $force);
+
+    // Phase 6: wp-tests-config.php
+    envlite_phase6_install($repoRoot, $force);
+
+    // Phase 7: src/wp-config.php (consumes port)
+    envlite_phase7_install($repoRoot, $resolvedPort, $force);
+
+    // Phase 8: router.php
+    envlite_phase8_install($repoRoot, $force);
+
+    fwrite(STDERR, "envlite init: ok (port $resolvedPort)\n");
+    return 0;
+}
+
+function envlite_observe_ht_sqlite(string $repoRoot): void {
+    $rel = 'src/wp-content/database/.ht.sqlite';
+    $abs = "$repoRoot/$rel";
+    if (!is_file($abs)) { return; }
+    $manifest = envlite_manifest_load($repoRoot);
+    if (isset($manifest[$rel])) { return; }
+    $bytes = file_get_contents($abs);
+    $manifest[$rel] = hash('sha256', $bytes);
+    envlite_manifest_save($repoRoot, $manifest);
 }
 
 function envlite_cmd_serve(array $args, bool $force): int {
