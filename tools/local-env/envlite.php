@@ -372,6 +372,33 @@ function envlite_phase1_write_cache(string $repoRoot, int $port): void {
     envlite_manifest_save($repoRoot, $manifest);
 }
 
+function envlite_phase2_npm_ci(string $repoRoot): void {
+    $exit = envlite_proc_stream(['npm', 'ci'], $repoRoot);
+    if ($exit !== 0) {
+        envlite_log('init', "phase 2: npm ci failed (exit $exit)");
+        exit(1);
+    }
+}
+
+function envlite_phase3_build_dev(string $repoRoot): void {
+    $exit = envlite_proc_stream(['npm', 'run', 'build:dev'], $repoRoot);
+    if ($exit !== 0) {
+        envlite_log('init', "phase 3: npm run build:dev failed (exit $exit)");
+        exit(1);
+    }
+}
+
+function envlite_phase4_composer_install(string $repoRoot): void {
+    $exit = envlite_proc_stream(
+        ['composer', 'install', '--no-interaction', '--ignore-platform-req=ext-simplexml'],
+        $repoRoot
+    );
+    if ($exit !== 0) {
+        envlite_log('init', "phase 4: composer install failed (exit $exit)");
+        exit(1);
+    }
+}
+
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
