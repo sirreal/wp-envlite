@@ -301,6 +301,63 @@ function envlite_phase0_run(string $repoRoot): void {
     }
 }
 
+const ENVLITE_PORT_LOW = 8100;
+const ENVLITE_PORT_POOL_SIZE = 800;
+
+function envlite_phase1_seed_port(string $absPath): int {
+    // hash('crc32b') is unsigned and 8 hex chars; substr(-7) is 28 bits, fits in PHP int even on 32-bit.
+    $digest = hash('crc32b', $absPath);
+    $seed = hexdec(substr($digest, -7));
+    return ENVLITE_PORT_LOW + ($seed % ENVLITE_PORT_POOL_SIZE);
+}
+
+function envlite_phase1_port_is_free(int $port): bool {
+    $sock = @stream_socket_server("tcp://127.0.0.1:$port", $errno, $errstr);
+    if (!is_resource($sock)) { return false; }
+    fclose($sock);
+    return true;
+}
+
+function envlite_phase1_discover_port(string $repoRoot, ?int $explicitPort): int {
+    $cachePath = rtrim(envlite_path_to_posix($repoRoot), '/') . '/.envlite/port';
+
+    if ($explicitPort !== null) {
+        if (!envlite_phase1_port_is_free($explicitPort)) {
+            envlite_log('init', "phase 1: port $explicitPort is in use; try a different --port (e.g. lsof -nP -iTCP:$explicitPort -sTCP:LISTEN)");
+            exit(1);
+        }
+        envlite_phase1_write_cache($repoRoot, $explicitPort);
+        return $explicitPort;
+    }
+
+    if (is_file($cachePath)) {
+        $cached = (int) trim(file_get_contents($cachePath));
+        if ($cached >= ENVLITE_PORT_LOW && $cached <= ENVLITE_PORT_LOW + ENVLITE_PORT_POOL_SIZE - 1) {
+            return $cached;
+        }
+        // out of range: fall through to re-pick
+    }
+
+    $start = envlite_phase1_seed_port(realpath($repoRoot) ?: $repoRoot);
+    for ($i = 0; $i < ENVLITE_PORT_POOL_SIZE; $i++) {
+        $cand = ENVLITE_PORT_LOW + ((($start - ENVLITE_PORT_LOW) + $i) % ENVLITE_PORT_POOL_SIZE);
+        if (envlite_phase1_port_is_free($cand)) {
+            envlite_phase1_write_cache($repoRoot, $cand);
+            return $cand;
+        }
+    }
+    envlite_log('init', 'phase 1: no free port in 8100-8899');
+    exit(1);
+}
+
+function envlite_phase1_write_cache(string $repoRoot, int $port): void {
+    $cachePath = rtrim(envlite_path_to_posix($repoRoot), '/') . '/.envlite/port';
+    $hash = envlite_atomic_write($cachePath, "$port\n");
+    $manifest = envlite_manifest_load($repoRoot);
+    $manifest['.envlite/port'] = $hash;
+    envlite_manifest_save($repoRoot, $manifest);
+}
+
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
