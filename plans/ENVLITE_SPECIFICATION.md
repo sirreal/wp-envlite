@@ -137,17 +137,27 @@ assumptions. Cheap to run and informative on failure.
      `file_get_contents` in Phases 5 and 7). Without it the spec's
      network fetches fail with "Unable to find the wrapper 'https'".
    - `simplexml` — required by the PHPStan/PHPCS toolchain that Phase 4
-     installs. This is also the extension whose composer platform
-     requirement Phase 4 ignores; verifying it here means the ignore
-     flag is decorative, not load-bearing.
+     installs. Phase 4 passes `--ignore-platform-req=ext-simplexml` to
+     Composer because Composer's resolver flags this requirement even
+     when the extension is loaded; that flag is what makes
+     `composer install` succeed. The Phase 0 check exists so the
+     `--ignore-platform-req` flag does not also paper over a genuinely
+     missing extension — when simplexml is absent, `composer install`
+     would still appear to succeed but `vendor/bin/phpstan` and PHPCS
+     ruleset loading would fail at runtime.
    - `zip` — required by `ZipArchive` for Phase 5.
 
    `hash` is non-disable-able since PHP 7.4 and is not checked.
-4. `node`, `npm`, `composer` resolve via `PATH` (use `proc_open` with
-   `command -v` or PHP's own equivalent — but ultimately use a
-   PHP-native `PATH` search to avoid depending on a shell).
+4. `node`, `npm`, `composer` resolve via `PATH`. Resolution is done in
+   pure PHP (no shell): split `getenv('PATH')` on `PATH_SEPARATOR`, and
+   for each segment check whether `<segment>/<binary>` is a file and is
+   executable (`is_file()` && `is_executable()`). The first match wins.
+   This avoids depending on `command -v`, `which`, or any shell builtin.
 5. The reported versions of `node` (≥ 20.10) and `npm` (≥ 10.2). Composer
-   ≥ 2.
+   ≥ 2. Versions are obtained by spawning each binary with its
+   version-printing flag (`node --version`, `npm --version`,
+   `composer --version`) via `proc_open` and parsing stdout; envlite
+   does not invoke a shell.
 
 **Outputs:** none. On failure, exit 3 with the failed check identified.
 
@@ -416,7 +426,7 @@ shipped sample. The phpunit bootstrap reads this file to learn `ABSPATH`
 and DB constants.
 
 **Operation:** in PHP, read `wp-tests-config-sample.php`, replace the
-following four literal substrings (each appears exactly once in the
+following three literal substrings (each appears exactly once in the
 sample), and write the result to `wp-tests-config.php`:
 
 | Sample placeholder | envlite value |
@@ -426,9 +436,10 @@ sample), and write the result to `wp-tests-config.php`:
 | `yourpasswordhere` | `wp` |
 
 (Use `str_replace` or `strtr` over the file contents; do not invoke any
-external command.) After the write, assert that each of the four
+external command.) After the write, assert that each of the three
 placeholders is no longer present in the output (catches an upstream
-sample reshape).
+sample reshape). DB_HOST is left as the sample's `localhost` — the
+SQLite drop-in ignores it, but `wpdb` still requires it to be defined.
 
 **Inputs:** `wp-tests-config-sample.php`.
 **Outputs:** `wp-tests-config.php` at the repo root.
@@ -640,7 +651,7 @@ Files inside:
 | File | Purpose | Schema |
 |---|---|---|
 | `port` | Cached site port (Phase 1). | A single integer line. |
-| `manifest` | Records every file/directory envlite has written, with the content hash at the time of writing. | One entry per line: `<sha256>  <relative path>` (sha256 over the file's content at write time; `dir` in the hash field for a directory entry). |
+| `manifest` | Records every file/directory envlite has written, with the content hash at the time of writing. | One entry per line: `<sha256>  <relative path>`. The hash is sha256 of the **bytes envlite is about to write**, computed before the temp file is renamed into place — never re-read from disk afterwards. `dir` in the hash field denotes a directory entry. |
 
 **Path canonicalization.** Paths in the manifest use POSIX `/`
 separators, are relative to the repo root, and are NFC-normalized
@@ -658,12 +669,15 @@ the slow-to-rebuild parts survive a clean+init cycle.)
 
 **Atomic writes.** Every file envlite writes — whether content
 (`router.php`, `wp-config.php`, etc.) or the manifest itself — uses the
-write-temp + fsync + rename pattern: write to a sibling `.tmp` path,
-fsync, `rename()` over the final path. The manifest entry update
-happens after the content rename, also atomic-replace. A SIGINT mid-
-operation leaves either fully-pre-write or fully-post-write state on
-disk; no half-written file claims a hash for content that wasn't
-durable.
+write-temp + fsync + rename pattern: hash the in-memory bytes
+(`hash('sha256', $bytes)`), write them to a sibling `.tmp` path, fsync,
+`rename()` over the final path. The manifest entry update uses the
+already-computed hash and happens after the content rename, also
+atomic-replace. envlite **never** calls `hash_file()` on the renamed
+target to populate the manifest — that would race with any subsequent
+writer. A SIGINT mid-operation leaves either fully-pre-write or
+fully-post-write state on disk; no half-written file claims a hash for
+content that wasn't durable.
 
 **Ownership decisions** (consulted by Phases 5–8):
 
