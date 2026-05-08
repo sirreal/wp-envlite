@@ -240,26 +240,40 @@ function envlite_phase0_version_ge(array $a, array $b): bool {
     return true;
 }
 
+/** Capture variant: returns [$exit, $stdout, $stderr]. Used by Phase 0. */
+function envlite_proc_capture(array $cmd, ?string $cwd = null): array {
+    $proc = @proc_open(
+        $cmd,
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        $cwd
+    );
+    if (!is_resource($proc)) { return [-1, '', '']; }
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[1]); fclose($pipes[2]);
+    $exit = proc_close($proc);
+    return [$exit, $stdout ?: '', $stderr ?: ''];
+}
+
+/** Streaming variant: child stdio inherits the parent's. Used by Phases 2/3/4 and `serve`. */
+function envlite_proc_stream(array $cmd, ?string $cwd = null): int {
+    $proc = @proc_open($cmd, [0 => STDIN, 1 => STDOUT, 2 => STDERR], $pipes, $cwd);
+    if (!is_resource($proc)) { return -1; }
+    return proc_close($proc);
+}
+
 /**
  * Returns null on missing tool (proc_open failure / nonzero exit / unparseable
  * output). Returns [major, minor, patch] otherwise. The version flag arg
  * accommodates `--version` (npm/composer) and `-v` if a future tool prefers it.
  */
 function envlite_phase0_tool_version(array $cmd): ?array {
-    $proc = @proc_open(
-        $cmd,
-        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-        $pipes
-    );
-    if (!is_resource($proc)) { return null; }
-    fclose($pipes[0]);
-    $out = stream_get_contents($pipes[1]);
-    $err = stream_get_contents($pipes[2]);
-    fclose($pipes[1]); fclose($pipes[2]);
-    $exit = proc_close($proc);
+    [$exit, $stdout, $stderr] = envlite_proc_capture($cmd);
     if ($exit !== 0) { return null; }
     try {
-        return envlite_phase0_parse_version($out !== '' ? $out : $err);
+        return envlite_phase0_parse_version($stdout !== '' ? $stdout : $stderr);
     } catch (\Throwable $e) {
         return null;
     }
