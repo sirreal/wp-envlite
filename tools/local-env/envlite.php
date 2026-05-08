@@ -11,6 +11,7 @@ function envlite_help_text(): string {
 
 		Subcommands:
 		  init [--port=N] [--no-build]   Run all setup phases.
+		  up   [--port=N] [--no-build]   Run init phases, then start the dev server.
 		  serve                          Run the dev server on the cached port.
 		  clean                          Remove envlite-managed files.
 		  help                           Print this help.
@@ -739,6 +740,7 @@ function envlite_main(array $argv): int {
         return 0;
     }
     if ($sub === 'init')  { return envlite_cmd_init($args, $force); }
+    if ($sub === 'up')    { return envlite_cmd_up($args, $force); }
     if ($sub === 'serve') { return envlite_cmd_serve($args, $force); }
     if ($sub === 'clean') { return envlite_cmd_clean($args, $force); }
 
@@ -796,7 +798,7 @@ function envlite_cmd_init(array $args, bool $force): int {
         [8, function () use ($repoRoot, $resolvedPort) { envlite_phase8_install_site($repoRoot, $resolvedPort); }],
     ];
     foreach ($phases as [$n, $fn]) {
-        $rc = envlite_init_phase_guard($n, $fn);
+        $rc = envlite_phase_guard('init', $n, $fn);
         if ($rc !== 0) { return $rc; }
     }
 
@@ -804,7 +806,62 @@ function envlite_cmd_init(array $args, bool $force): int {
     return 0;
 }
 
-function envlite_init_phase_guard(int $n, callable $fn): int {
+function envlite_cmd_up(array $args, bool $force): int {
+    $port = null;
+    $noBuild = false;
+    foreach ($args as $a) {
+        if ($a === '--no-build') { $noBuild = true; continue; }
+        if (preg_match('/^--port=(\d+)$/', $a, $m)) {
+            $port = (int) $m[1];
+            if ($port < 1 || $port > 65535) {
+                envlite_log('up', "invalid --port value: $a");
+                return 2;
+            }
+            continue;
+        }
+        envlite_log('up', "unknown argument: $a");
+        return 2;
+    }
+
+    $repoRoot = getcwd();
+
+    envlite_phase0_run($repoRoot);
+    envlite_observe_ht_sqlite($repoRoot);
+
+    $resolvedPort = envlite_phase1_discover_port($repoRoot, $port);
+    fwrite(STDERR, "envlite up: port $resolvedPort\n");
+
+    envlite_phase2_npm_ci($repoRoot);
+    if (!$noBuild) {
+        envlite_phase3_build_dev($repoRoot);
+    }
+    envlite_phase4_composer_install($repoRoot);
+
+    $phases = [
+        [5, function () use ($repoRoot, $force) { envlite_phase5_install($repoRoot, $force); }],
+        [6, function () use ($repoRoot, $force) { envlite_phase6_install($repoRoot, $force); }],
+        [7, function () use ($repoRoot, $resolvedPort, $force) { envlite_phase7_install($repoRoot, $resolvedPort, $force); }],
+        [8, function () use ($repoRoot, $resolvedPort) { envlite_phase8_install_site($repoRoot, $resolvedPort); }],
+    ];
+    foreach ($phases as [$n, $fn]) {
+        $rc = envlite_phase_guard('up', $n, $fn);
+        if ($rc !== 0) { return $rc; }
+    }
+
+    if (!envlite_phase1_port_is_free($resolvedPort)) {
+        envlite_log('up', "failed to bind 127.0.0.1:$resolvedPort");
+        return 1;
+    }
+
+    fwrite(STDERR, "envlite up: serving http://127.0.0.1:$resolvedPort/ (admin / password)\n");
+    $exit = envlite_proc_stream(
+        ['php', '-S', "127.0.0.1:$resolvedPort", '-t', 'src', __DIR__ . '/router.php'],
+        $repoRoot
+    );
+    return $exit === 0 ? 0 : 1;
+}
+
+function envlite_phase_guard(string $sub, int $n, callable $fn): int {
     try {
         $fn();
         return 0;
@@ -814,7 +871,7 @@ function envlite_init_phase_guard(int $n, callable $fn): int {
         if (strpos($msg, $prefix) !== 0) {
             $msg = $prefix . $msg;
         }
-        envlite_log('init', $msg);
+        envlite_log($sub, $msg);
         return 1;
     }
 }

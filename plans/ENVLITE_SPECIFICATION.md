@@ -61,6 +61,7 @@ shorthand for the full command line.
 |---|---|
 | (no args), `help`, `--help`, `-h` | Print usage and exit 0. |
 | `init` | Run all setup phases. Leaves the repo ready to `serve` and to run tests. |
+| `up` | Run all setup phases, then start the dev server in the foreground. Equivalent to `init` followed by `serve`. |
 | `serve` | Exec the dev server on the discovered/cached port. Foreground; respond to Ctrl-C. |
 | `clean` | Remove envlite-managed files (manifest entries). Does not touch `node_modules/`, `vendor/`, or build artifacts under `src/`. |
 
@@ -79,6 +80,13 @@ shorthand for the full command line.
   - `--port=N` skips Phase 1 discovery and uses the given port. Updates
     `.envlite/port` to N.
   - `--no-build` skips Phase 3. Useful when iterating on PHP-only changes.
+- `up [--port=N] [--no-build]`
+  - Same flag semantics as `init`. After all phases succeed, `up`
+    re-probes the resolved port and runs `php -S` in the foreground —
+    the same invocation `serve` uses. The currently shipped form spawns
+    `php -S` as a child process via `proc_open` (matching `serve`); a
+    follow-up will switch to `pcntl_exec` so the envlite process is
+    replaced in place.
 - `serve` (no flags; the cached port is the source of truth)
 - `clean` (no flags)
 
@@ -890,6 +898,10 @@ parallel. envlite v1 runs them serially: the wall-time savings (~5 s)
 are not worth the output-interleaving and error-handling complexity in
 the initial implementation. A future revision may parallelize. Phase
 8 must always run last in `init` — it has the most predecessors.
+
+`up` runs the same Phase 0–8 sequence as `init`, then performs the same
+bind-probe + foreground `php -S` invocation as `serve`. It introduces no
+new phases.
 
 ---
 
