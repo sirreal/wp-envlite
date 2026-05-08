@@ -38,29 +38,27 @@ plus the host `php` itself when launching the dev server.
 ### Invocation
 
 envlite is a single PHP file located at
-`tools/local-env/envlite.php` in the wordpress-develop checkout.
-Both invocations are equivalent and must produce identical results:
+`tools/local-env/envlite.php` in the wordpress-develop checkout. The
+canonical (and only supported) invocation form is:
 
 ```
 $ php tools/local-env/envlite.php <subcommand> [args...]
-$ envlite <subcommand> [args...]      # when on PATH (e.g. via symlink)
 ```
 
-When invoked as `envlite` directly, the script's shebang
-(`#!/usr/bin/env php`) selects the runtime; when invoked as
-`php tools/local-env/envlite.php`, the user's chosen PHP runs the file.
-Either path yields the same behavior. The script must not depend on
-`__FILE__` resolution that breaks under either form.
+PATH-based forms (`envlite <subcommand>` via a user-installed symlink
+or shebang execution) are out of scope; envlite does not install
+itself onto `PATH`, and the spec assumes the explicit `php …` form
+above. Throughout the rest of this document, `envlite <subcommand>` is
+shorthand for the full command line.
 
 ### Subcommands
 
 | Subcommand | Purpose |
 |---|---|
 | (no args), `help`, `--help`, `-h` | Print usage and exit 0. |
-| `version`, `--version`, `-V` | Print envlite's version string and exit 0. |
 | `init` | Run all setup phases. Leaves the repo ready to `serve` and to run tests. |
 | `serve` | Exec the dev server on the discovered/cached port. Foreground; respond to Ctrl-C. |
-| `clean` | Remove envlite-managed files (manifest entries). Does not touch `node_modules/`, `vendor/`, `.composer-home/`, or build artifacts under `src/`. |
+| `clean` | Remove envlite-managed files (manifest entries). Does not touch `node_modules/`, `vendor/`, or build artifacts under `src/`. |
 
 `port` is intentionally not a subcommand; the cached port lives at
 `.envlite/port` and is one `cat` away.
@@ -235,9 +233,9 @@ function port_is_free(port):
   than their neighbors, and a blacklist that ages with the dev-tool
   ecosystem is more bug surface than benefit.
 - `realpath` on macOS canonicalizes `/var` → `/private/var`,
-  `/tmp` → `/private/tmp`. iCloud-synced directories may produce
-  different canonicalizations across systems; the chosen port is not
-  guaranteed identical across reboots in such cases.
+  `/tmp` → `/private/tmp`. The chosen port is therefore tied to the
+  canonical absolute path of the checkout; moving the checkout
+  re-derives a new port.
 - The probe binds and closes; it does not "reserve" the port. A racy
   external process could grab the port between Phase 1 and the user
   starting `envlite serve`, but on a developer laptop this race is
@@ -266,7 +264,6 @@ the user's terminal. Exit non-zero if `npm` exits non-zero.
 
 **Inputs:** `package-lock.json` (committed to wordpress-develop).
 **Outputs:** `node_modules/` populated.
-**Wall time:** ~12 s warm npm cache, up to ~60 s cold.
 
 **Idempotency:** safe to re-run; `npm ci` itself is idempotent. envlite
 does not gate this phase on `node_modules/` existing — let `npm ci`
@@ -298,8 +295,6 @@ develop Gruntfile's `build:dev` target.
 compiled blocks under `src/wp-includes/blocks/`, vendored JS, etc. envlite
 does not enumerate these; it trusts the upstream target.
 
-**Wall time:** ~16 s.
-
 **Why this is not optional:** phpunit's bootstrap loads
 `src/wp-load.php` → `src/wp-settings.php`, which references generated
 files (notably `src/wp-includes/version.php`). Without a build, phpunit
@@ -316,26 +311,20 @@ affect build outputs.
 **Purpose:** install `phpunit`, `yoast/phpunit-polyfills`, the WP
 coding standards, PHPStan.
 
-**Operation:** spawn `composer install` with the following environment
-and flags:
+**Operation:** spawn `composer install` with these flags:
 
-- `COMPOSER_HOME` set to `<repoRoot>/.composer-home` (an absolute path).
 - `--no-interaction`.
 - `--ignore-platform-req=ext-simplexml`.
+
+envlite does not set `COMPOSER_HOME`; Composer uses its default
+(`~/.composer` or `~/.config/composer`, per Composer's own resolution).
+Composer's cache layout is Composer's concern, not envlite's.
 
 **Inputs:** `composer.json`. wordpress-develop intentionally ships
 **without** a `composer.lock` (`config.lock = false`). Each install
 resolves fresh.
 **Outputs:** `vendor/`, autoload files, `phpcs` `installed_paths`
 configured. No lockfile is created.
-**Wall time:** ~7 s warm.
-
-**Why per-checkout `COMPOSER_HOME`:** Composer's *cache* (under
-`$COMPOSER_HOME/cache/`) is not safe under concurrent writers. Two
-envlite invocations against a shared `~/.composer/cache/` regularly
-produce partial-zip extracts that fail randomly. Per-checkout
-`COMPOSER_HOME` removes the race at the cost of ~80 MB local cache
-duplication. envlite manages no global Composer state.
 
 **Why `--ignore-platform-req=ext-simplexml`:** the PHPStan/PHPCS
 toolchain in `composer.json` declares `ext-simplexml` in a way that
@@ -358,10 +347,18 @@ instead of MySQL.
 
 **Operation:**
 
-1. If `src/wp-content/plugins/sqlite-database-integration/db.copy`
-   already exists locally, skip steps 2–4 and proceed to step 5
-   (re-copy the local `db.copy`). The pinned plugin tree from a prior
-   `init` is reusable as-is; there is no value in re-downloading it.
+All file writes in this phase follow the standard prompt rule (see
+"Destructive operations and prompts"): an unowned destination prompts
+before being overwritten; `--force` answers yes to every such prompt.
+
+1. If `src/wp-content/plugins/sqlite-database-integration/` is recorded
+   in the manifest (envlite-owned `dir` entry) **and** its `db.copy` is
+   present locally, skip steps 2–4 and proceed to step 5. The pinned
+   plugin tree from a prior `init` is reusable as-is; there is no value
+   in re-downloading it.
+
+   Otherwise (no manifest entry, or `db.copy` missing) proceed to
+   step 2.
 2. Download the plugin zip via PHP HTTP (`file_get_contents` with a
    stream context that follows redirects, sets a User-Agent, and
    times out at 30 s) from
@@ -375,9 +372,20 @@ instead of MySQL.
 4. Extract using PHP's `ZipArchive` into `src/wp-content/plugins/`.
    This produces `src/wp-content/plugins/sqlite-database-integration/`.
    Delete the temp zip.
+
+   If the destination directory exists and is **not** in the manifest
+   (a user-installed plugin), prompt before overwriting. `--force`
+   bypasses the prompt and the extract proceeds, overlaying envlite's
+   pinned tree on top of whatever was there. Record the directory in
+   the manifest as a `dir` entry once extraction succeeds.
 5. Copy `src/wp-content/plugins/sqlite-database-integration/db.copy` to
    `src/wp-content/db.php` (byte-for-byte). This is the activation step —
    `wp-settings.php` autoloads `wp-content/db.php` when present.
+
+   The standard manifest contract applies: if `db.php` exists and is
+   not in the manifest (or is in the manifest with a drifted hash),
+   prompt before overwriting. `--force` bypasses. Record `db.php` in
+   the manifest with the hash of the bytes written.
 6. Post-condition tripwire: assert that `db.copy` contains the literal
    string `{SQLITE_IMPLEMENTATION_FOLDER_PATH}`. The plugin's fallback
    `realpath()` (see below) depends on this placeholder being present
@@ -664,8 +672,8 @@ canonicalization details (duplicate handling, which directories get
 it (reordering lines, rewriting hashes) produces undefined behavior on
 the next `init` or `clean`. Users who need to "forget" an envlite-owned
 path should run `envlite clean` and re-`init`. (`clean` doesn't touch
-`node_modules/`, `vendor/`, `.composer-home/`, or build artifacts, so
-the slow-to-rebuild parts survive a clean+init cycle.)
+`node_modules/`, `vendor/`, or build artifacts, so the slow-to-rebuild
+parts survive a clean+init cycle.)
 
 **Atomic writes.** Every file envlite writes — whether content
 (`router.php`, `wp-config.php`, etc.) or the manifest itself — uses the
@@ -718,7 +726,6 @@ src/wp-content/database/.ht.sqlite                       (created on demand; obs
 ```
 node_modules/                                            (Phase 2 — `npm ci`)
 vendor/                                                  (Phase 4 — `composer install`)
-.composer-home/                                          (Phase 4 — Composer cache)
 src/wp-includes/version.php and other build outputs      (Phase 3 — `npm run build:dev`)
 ```
 
@@ -729,21 +736,24 @@ settings, uploads).
 **Observation point:** at the start of every `init` and every `clean`,
 envlite checks whether `src/wp-content/database/.ht.sqlite` exists on
 disk and is not yet in the manifest; if so, envlite adds an entry
-recording the file's hash at that moment. This guarantees that a
-`clean` invoked after `serve` (without an intervening `init`) still
-treats the DB as envlite-tracked content and prompts before removing
-it, rather than silently leaving an orphan or silently deleting user
-data.
+recording the file's hash at that moment. The `init` recording
+persists in the manifest as ongoing ownership. The `clean` recording is
+transient — it exists only so the file appears in *this* invocation's
+removal prompt; the manifest is wiped at the end of `clean` regardless.
+Either way the guarantee is the same: a `clean` invoked after `serve`
+(without an intervening `init`) treats the DB as envlite-tracked
+content and prompts before removing it, rather than silently leaving an
+orphan or silently deleting user data.
 
 **`clean` semantics:** walk the manifest in reverse insertion order,
 present the full list of paths to be removed in a single prompt, then
 delete each entry on confirmation (skipped with `--force`). After the
 batch, remove `.envlite/` itself. Anything **not** in the manifest is
-preserved — `clean` never touches `node_modules/`, `vendor/`,
-`.composer-home/`, build artifacts under `src/`, a user-authored plugin
-checkout under `src/wp-content/plugins/`, a hand-rolled `wp-config.php`,
-or any other off-manifest content. To remove the side-effect dependency
-trees, use `git clean -fdx` or your usual tooling.
+preserved — `clean` never touches `node_modules/`, `vendor/`, build
+artifacts under `src/`, a user-authored plugin checkout under
+`src/wp-content/plugins/`, a hand-rolled `wp-config.php`, or any other
+off-manifest content. To remove the side-effect dependency trees, use
+`git clean -fdx` or your usual tooling.
 
 ---
 
@@ -858,11 +868,12 @@ explicit user assent. Users who want a fully clean slate run
 - Perform any `composer update` or `npm update`. envlite is reproducible
   from `package-lock.json` and `composer.json`; updates are an explicit
   human action.
-- Manage `node_modules/`, `vendor/`, `.composer-home/`, or build
-  artifacts under `src/`. envlite invokes `npm ci`, `composer install`,
-  and `npm run build:dev` as a convenience during `init`, but treats
-  their outputs as ordinary dev-tool artifacts: not tracked in the
-  manifest, not removed by `clean`. Use `git clean -fdx` or your usual
-  tooling.
+- Manage `node_modules/`, `vendor/`, or build artifacts under `src/`.
+  envlite invokes `npm ci`, `composer install`, and `npm run build:dev`
+  as a convenience during `init`, but treats their outputs as ordinary
+  dev-tool artifacts: not tracked in the manifest, not removed by
+  `clean`. Use `git clean -fdx` or your usual tooling.
+- Override Composer's cache or home directory. envlite does not set
+  `COMPOSER_HOME`; Composer's default applies.
 - Manage worktrees. envlite operates on whatever directory it is
   invoked in.
