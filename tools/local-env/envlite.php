@@ -41,6 +41,40 @@ function envlite_path_relative_to(string $root, string $abs): string {
     throw new \InvalidArgumentException("path outside repo root: $abs");
 }
 
+function envlite_manifest_path(string $repoRoot): string {
+    return rtrim(envlite_path_to_posix($repoRoot), '/') . '/.envlite/manifest';
+}
+
+function envlite_manifest_load(string $repoRoot): array {
+    $path = envlite_manifest_path($repoRoot);
+    if (!is_file($path)) { return []; }
+    $entries = [];
+    foreach (explode("\n", file_get_contents($path)) as $line) {
+        $line = rtrim($line, "\r");
+        if ($line === '') { continue; }
+        // Two-space delimiter. Hash field is exactly 64 hex chars or the literal "dir".
+        if (!preg_match('/^([0-9a-f]{64}|dir)  (.+)$/', $line, $m)) {
+            continue; // malformed, skip
+        }
+        $entries[$m[2]] = $m[1];
+    }
+    return $entries;
+}
+
+function envlite_manifest_save(string $repoRoot, array $entries): void {
+    $lines = '';
+    foreach ($entries as $path => $hash) {
+        $lines .= "$hash  $path\n";
+    }
+    $manifestPath = envlite_manifest_path($repoRoot);
+    $dir = dirname($manifestPath);
+    if (!is_dir($dir)) { mkdir($dir, 0700, true); }
+    // TODO Task 5: use envlite_atomic_write here.
+    $tmp = $manifestPath . '.tmp';
+    file_put_contents($tmp, $lines);
+    rename($tmp, $manifestPath);
+}
+
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
