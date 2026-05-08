@@ -27,6 +27,20 @@ function envlite_log(?string $subcommand, string $message): void {
     fwrite(STDERR, envlite_format_log($subcommand, $message));
 }
 
+function envlite_path_to_posix(string $path): string {
+    return str_replace('\\', '/', $path);
+}
+
+function envlite_path_relative_to(string $root, string $abs): string {
+    $root = rtrim(envlite_path_to_posix($root), '/');
+    $abs = envlite_path_to_posix($abs);
+    if ($abs === $root) { return ''; }
+    if (str_starts_with($abs, $root . '/')) {
+        return substr($abs, strlen($root) + 1);
+    }
+    throw new \InvalidArgumentException("path outside repo root: $abs");
+}
+
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
