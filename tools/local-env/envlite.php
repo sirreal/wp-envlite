@@ -17,6 +17,16 @@ function envlite_help_text(): string {
          . "  --force                        Disable interactive prompts.\n";
 }
 
+function envlite_format_log(?string $subcommand, string $message): string {
+    $prefix = $subcommand === null ? 'envlite' : "envlite $subcommand";
+    $message = rtrim($message, "\n");
+    return "$prefix: $message\n";
+}
+
+function envlite_log(?string $subcommand, string $message): void {
+    fwrite(STDERR, envlite_format_log($subcommand, $message));
+}
+
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
@@ -36,22 +46,22 @@ function envlite_main(array $argv): int {
     if ($sub === 'serve') { return envlite_cmd_serve($args, $force); }
     if ($sub === 'clean') { return envlite_cmd_clean($args, $force); }
 
-    fwrite(STDERR, "envlite: unknown subcommand: $sub\n");
+    envlite_log(null, "unknown subcommand: $sub");
     return 2;
 }
 
 function envlite_cmd_init(array $args, bool $force): int {
-    fwrite(STDERR, "envlite init: not implemented\n");
+    envlite_log('init', 'not implemented');
     return 1;
 }
 
 function envlite_cmd_serve(array $args, bool $force): int {
-    fwrite(STDERR, "envlite serve: not implemented\n");
+    envlite_log('serve', 'not implemented');
     return 1;
 }
 
 function envlite_cmd_clean(array $args, bool $force): int {
-    fwrite(STDERR, "envlite clean: not implemented\n");
+    envlite_log('clean', 'not implemented');
     return 1;
 }
 
