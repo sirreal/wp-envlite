@@ -399,6 +399,103 @@ function envlite_phase4_composer_install(string $repoRoot): void {
     }
 }
 
+const ENVLITE_SQLITE_PLUGIN_URL = 'https://downloads.wordpress.org/plugin/sqlite-database-integration.zip';
+const ENVLITE_SQLITE_PLUGIN_SHA256 = '44be096a14ebcea424b5e4bf764436ec85fb067f74ab47822c4c5346df21591e';
+const ENVLITE_SQLITE_PLACEHOLDER = '{SQLITE_IMPLEMENTATION_FOLDER_PATH}';
+
+function envlite_http_get(string $url, int $timeoutSeconds = 30): string {
+    $ctx = stream_context_create([
+        'http'  => [
+            'follow_location' => 1,
+            'max_redirects'   => 5,
+            'timeout'         => $timeoutSeconds,
+            'header'          => "User-Agent: envlite/" . ENVLITE_VERSION . "\r\n",
+        ],
+        'https' => [
+            'follow_location' => 1,
+            'max_redirects'   => 5,
+            'timeout'         => $timeoutSeconds,
+            'header'          => "User-Agent: envlite/" . ENVLITE_VERSION . "\r\n",
+        ],
+    ]);
+    $bytes = @file_get_contents($url, false, $ctx);
+    if ($bytes === false) {
+        throw new \RuntimeException("HTTP fetch failed: $url");
+    }
+    return $bytes;
+}
+
+function envlite_phase5_verify_sha256(string $path, string $expected): void {
+    $actual = hash_file('sha256', $path);
+    if ($actual !== $expected) {
+        throw new \RuntimeException("SHA256 mismatch on $path: expected $expected, got $actual");
+    }
+}
+
+function envlite_phase5_assert_placeholder(string $dbCopyPath): void {
+    $bytes = file_get_contents($dbCopyPath);
+    if ($bytes === false || !str_contains($bytes, ENVLITE_SQLITE_PLACEHOLDER)) {
+        throw new \RuntimeException(
+            "tripwire: " . ENVLITE_SQLITE_PLACEHOLDER . " placeholder missing from $dbCopyPath; spec assumption broken"
+        );
+    }
+}
+
+function envlite_phase5_install(string $repoRoot, bool $force): void {
+    $pluginDir = "$repoRoot/src/wp-content/plugins/sqlite-database-integration";
+    $dbCopy    = "$pluginDir/db.copy";
+    $dbPhpRel  = 'src/wp-content/db.php';
+    $pluginRel = 'src/wp-content/plugins/sqlite-database-integration';
+    $manifest  = envlite_manifest_load($repoRoot);
+
+    // Step 1: skip if already installed (manifest entry + db.copy on disk).
+    $alreadyInstalled = isset($manifest[$pluginRel]) && $manifest[$pluginRel] === 'dir' && is_file($dbCopy);
+    if (!$alreadyInstalled) {
+        // Steps 2-4: prompt if dest exists and is not envlite-owned.
+        if (is_dir($pluginDir) && !isset($manifest[$pluginRel])) {
+            envlite_prompt_or_abort($force, 'init', 'overwrite plugin tree', $pluginRel, null, null);
+        }
+        $tmpZip = sys_get_temp_dir() . '/envlite-sqlite-' . bin2hex(random_bytes(4)) . '.zip';
+        $bytes = envlite_http_get(ENVLITE_SQLITE_PLUGIN_URL);
+        file_put_contents($tmpZip, $bytes);
+        try {
+            envlite_phase5_verify_sha256($tmpZip, ENVLITE_SQLITE_PLUGIN_SHA256);
+            $zip = new \ZipArchive();
+            if ($zip->open($tmpZip) !== true) {
+                throw new \RuntimeException("ZipArchive::open failed: $tmpZip");
+            }
+            $zip->extractTo("$repoRoot/src/wp-content/plugins/");
+            $zip->close();
+        } finally {
+            @unlink($tmpZip);
+        }
+        $manifest[$pluginRel] = 'dir';
+        envlite_manifest_save($repoRoot, $manifest);
+    }
+
+    // Step 5: copy db.copy → db.php with manifest contract.
+    if (!is_file($dbCopy)) {
+        throw new \RuntimeException("db.copy missing at $dbCopy after extraction");
+    }
+    $dbBytes = file_get_contents($dbCopy);
+    $dbPhpAbs = "$repoRoot/$dbPhpRel";
+    $current = is_file($dbPhpAbs) ? file_get_contents($dbPhpAbs) : null;
+    $ownership = envlite_ownership($manifest, $dbPhpRel, $current);
+    if ($ownership === 'owned_drifted') {
+        $rec = $manifest[$dbPhpRel];
+        $cur = hash('sha256', $current);
+        envlite_prompt_or_abort($force, 'init', 'overwrite drifted file', $dbPhpRel, $rec, $cur);
+    } elseif ($ownership === 'unowned') {
+        envlite_prompt_or_abort($force, 'init', 'overwrite unowned file', $dbPhpRel, null, null);
+    }
+    $hash = envlite_atomic_write($dbPhpAbs, $dbBytes);
+    $manifest[$dbPhpRel] = $hash;
+    envlite_manifest_save($repoRoot, $manifest);
+
+    // Step 6: tripwire.
+    envlite_phase5_assert_placeholder($dbCopy);
+}
+
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
