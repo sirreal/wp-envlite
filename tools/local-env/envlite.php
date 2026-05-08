@@ -69,10 +69,31 @@ function envlite_manifest_save(string $repoRoot, array $entries): void {
     $manifestPath = envlite_manifest_path($repoRoot);
     $dir = dirname($manifestPath);
     if (!is_dir($dir)) { mkdir($dir, 0700, true); }
-    // TODO Task 5: use envlite_atomic_write here.
-    $tmp = $manifestPath . '.tmp';
-    file_put_contents($tmp, $lines);
-    rename($tmp, $manifestPath);
+    envlite_atomic_write($manifestPath, $lines);
+}
+
+function envlite_atomic_write(string $path, string $bytes): string {
+    $dir = dirname($path);
+    if (!is_dir($dir)) { mkdir($dir, 0755, true); }
+    $hash = hash('sha256', $bytes);
+    $tmp = $path . '.tmp';
+    $fh = fopen($tmp, 'wb');
+    if ($fh === false) { throw new \RuntimeException("cannot open $tmp"); }
+    if (fwrite($fh, $bytes) !== strlen($bytes)) {
+        fclose($fh); @unlink($tmp);
+        throw new \RuntimeException("short write to $tmp");
+    }
+    // fsync for crash-durability before rename. Available since PHP 8.1; on
+    // older PHPs we settle for fflush, which is the best we can do without
+    // pulling in extensions.
+    fflush($fh);
+    if (function_exists('fsync')) { @fsync($fh); }
+    fclose($fh);
+    if (!rename($tmp, $path)) {
+        @unlink($tmp);
+        throw new \RuntimeException("rename failed: $tmp -> $path");
+    }
+    return $hash;
 }
 
 function envlite_main(array $argv): int {
