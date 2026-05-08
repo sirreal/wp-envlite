@@ -980,6 +980,18 @@ explicit user assent. Users who want a fully clean slate run
     delete posts/pages/uploads on every `init`. envlite gates on
     `is_blog_installed()` and skips if true. Users who want a clean
     slate run `envlite clean` (which prompts for `.ht.sqlite`).
+13. **`127.0.0.1` everywhere, never `localhost`.** `php -S` binds
+    IPv4-only, but `localhost` resolves to `::1` first on modern
+    macOS/Linux — a browser hitting `http://localhost:<port>/` can get
+    `ECONNREFUSED` before any IPv4 fallback. Pinning the literal IPv4
+    in every place a host appears (`php -S` bind, `WP_HOME`,
+    `WP_SITEURL`, `$_SERVER['HTTP_HOST']` in Phase 8, Phase 1
+    bind-probe) also keeps the cookie origin invariant: WordPress
+    bakes `WP_HOME` into redirects and cookie domains, so a mismatch
+    between the constant and the address the user typed breaks admin
+    login. `localhost` would also depend on `/etc/hosts` and the
+    system resolver; `127.0.0.1` is a literal address with no
+    surprises.
 
 ---
 
