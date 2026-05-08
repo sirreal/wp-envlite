@@ -96,6 +96,25 @@ function envlite_atomic_write(string $path, string $bytes): string {
     return $hash;
 }
 
+/**
+ * @param array<string,string> $manifest path => sha256-hex|"dir"
+ * @param string|null $currentBytes Null if the file/dir does not exist on disk
+ *                                  or is a directory entry whose contents we don't drift-check.
+ * @return 'absent'|'owned_clean'|'owned_drifted'|'unowned'
+ */
+function envlite_ownership(array $manifest, string $relPath, ?string $currentBytes): string {
+    $recorded = $manifest[$relPath] ?? null;
+    if ($currentBytes === null && $recorded === null) { return 'absent'; }
+    if ($recorded === null) { return 'unowned'; }
+    if ($recorded === 'dir') { return 'owned_clean'; }
+    if ($currentBytes === null) {
+        // Recorded as file but currentBytes wasn't provided — caller missed reading it.
+        // Treat as drifted; safer to prompt.
+        return 'owned_drifted';
+    }
+    return hash('sha256', $currentBytes) === $recorded ? 'owned_clean' : 'owned_drifted';
+}
+
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
