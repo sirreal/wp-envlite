@@ -115,6 +115,99 @@ function envlite_ownership(array $manifest, string $relPath, ?string $currentByt
     return hash('sha256', $currentBytes) === $recorded ? 'owned_clean' : 'owned_drifted';
 }
 
+function envlite_format_prompt(
+    string $subcommand,
+    string $operation, // unused for now; kept so future ops can specialize wording
+    string $relPath,
+    ?string $recordedHash,
+    ?string $currentHash
+): string {
+    if ($recordedHash !== null && $currentHash !== null) {
+        $rec = substr($recordedHash, 0, 8);
+        $cur = substr($currentHash, 0, 8);
+        $body = "envlite owns $relPath but content has drifted (recorded {$rec}\u{2026}, current {$cur}\u{2026}). Overwrite?";
+    } else {
+        $body = "not envlite-owned: $relPath. Overwrite?";
+    }
+    return "envlite $subcommand: $body [y/N] ";
+}
+
+/**
+ * Pure-IO variant for testability. Production code calls envlite_prompt() below.
+ */
+function envlite_prompt_io(
+    bool $force,
+    bool $isTty,
+    string $subcommand,
+    string $operation,
+    string $relPath,
+    ?string $recordedHash,
+    ?string $currentHash,
+    $stdin,
+    $stderr
+): bool {
+    if ($force) { return true; }
+    if (!$isTty) {
+        fwrite($stderr, envlite_format_log(
+            null,
+            "non-interactive context and --force not given; aborting at $operation on $relPath"
+        ));
+        return false;
+    }
+    fwrite($stderr, envlite_format_prompt($subcommand, $operation, $relPath, $recordedHash, $currentHash));
+    $line = fgets($stdin);
+    if ($line === false) { return false; }
+    $resp = strtolower(trim($line));
+    return $resp === 'y' || $resp === 'yes';
+}
+
+/**
+ * Production wrapper. Returns true=overwrite, false=skip. On non-interactive
+ * abort the caller must exit 5 — see callers.
+ */
+function envlite_prompt(
+    bool $force,
+    string $subcommand,
+    string $operation,
+    string $relPath,
+    ?string $recordedHash,
+    ?string $currentHash
+): bool {
+    return envlite_prompt_io(
+        $force,
+        stream_isatty(STDIN),
+        $subcommand,
+        $operation,
+        $relPath,
+        $recordedHash,
+        $currentHash,
+        STDIN,
+        STDERR
+    );
+}
+
+/**
+ * Convenience: returns true if the caller should proceed with the write.
+ * On non-interactive abort, exits 5 directly (matches spec).
+ */
+function envlite_prompt_or_abort(
+    bool $force,
+    string $subcommand,
+    string $operation,
+    string $relPath,
+    ?string $recordedHash,
+    ?string $currentHash
+): bool {
+    if ($force) { return true; }
+    if (!stream_isatty(STDIN)) {
+        envlite_log(null, "non-interactive context and --force not given; aborting at $operation on $relPath");
+        exit(5);
+    }
+    $ok = envlite_prompt($force, $subcommand, $operation, $relPath, $recordedHash, $currentHash);
+    if (!$ok) { exit(5); }
+    return true;
+}
+
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
