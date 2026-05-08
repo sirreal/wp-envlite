@@ -60,7 +60,7 @@ Either path yields the same behavior. The script must not depend on
 | `version`, `--version`, `-V` | Print envlite's version string and exit 0. |
 | `init` | Run all setup phases. Leaves the repo ready to `serve` and to run tests. |
 | `serve` | Exec the dev server on the discovered/cached port. Foreground; respond to Ctrl-C. |
-| `clean` | Remove envlite-generated artifacts. `--keep-deps` preserves `node_modules/`, `vendor/`, and `.composer-home/`. |
+| `clean` | Remove envlite-managed files (manifest entries). Does not touch `node_modules/`, `vendor/`, `.composer-home/`, or build artifacts under `src/`. |
 
 `port` is intentionally not a subcommand; the cached port lives at
 `.envlite/port` and is one `cat` away.
@@ -78,7 +78,7 @@ Either path yields the same behavior. The script must not depend on
     `.envlite/port` to N.
   - `--no-build` skips Phase 3. Useful when iterating on PHP-only changes.
 - `serve` (no flags; the cached port is the source of truth)
-- `clean [--keep-deps]`
+- `clean` (no flags)
 
 ### How to confirm setup works
 
@@ -376,8 +376,16 @@ instead of MySQL.
    so the implementer is forced to revisit.
 
 **Inputs:** network access on first install only.
-**Outputs:** `src/wp-content/plugins/sqlite-database-integration/` and
-`src/wp-content/db.php`. Both recorded in the manifest.
+**Outputs:**
+- `src/wp-content/plugins/sqlite-database-integration/` — recorded as a
+  single `dir` manifest entry. Internal files (including `db.copy`) are
+  not individually hash-tracked; the contents come from a SHA-pinned zip
+  and the step-6 tripwire is a one-shot install-time check, not ongoing
+  drift detection.
+- `src/wp-content/db.php` — recorded as a file entry with content hash;
+  drift-detected on subsequent `init` runs.
+
+Both are removed by `clean`.
 
 **Why this is sufficient:** `tests/phpunit/includes/install.php` does
 `require_once ABSPATH . 'wp-settings.php'` *before* issuing any DB
@@ -644,8 +652,9 @@ canonicalization details (duplicate handling, which directories get
 **Manifest immutability.** The manifest is envlite-managed. Hand-editing
 it (reordering lines, rewriting hashes) produces undefined behavior on
 the next `init` or `clean`. Users who need to "forget" an envlite-owned
-path should run `envlite clean` (with `--keep-deps` if they want to keep
-the slow-to-rebuild parts) and re-`init`.
+path should run `envlite clean` and re-`init`. (`clean` doesn't touch
+`node_modules/`, `vendor/`, `.composer-home/`, or build artifacts, so
+the slow-to-rebuild parts survive a clean+init cycle.)
 
 **Atomic writes.** Every file envlite writes — whether content
 (`router.php`, `wp-config.php`, etc.) or the manifest itself — uses the
@@ -677,23 +686,31 @@ to edit the manifest, that order is well-defined.
 
 After a successful `envlite init`, the repo has:
 
+**envlite-managed (in manifest, removed by `clean`):**
+
 ```
 .envlite/port                                            (Phase 1)
 .envlite/manifest                                        (all phases)
-node_modules/                                            (Phase 2)
-vendor/                                                  (Phase 4)
-.composer-home/                                          (Phase 4)
-src/wp-includes/version.php  (and other build artifacts) (Phase 3)
 src/wp-content/plugins/sqlite-database-integration/      (Phase 5)
 src/wp-content/db.php                                    (Phase 5)
 wp-tests-config.php                                      (Phase 6)
 src/wp-config.php                                        (Phase 7)
 router.php                                               (Phase 8)
+src/wp-content/database/.ht.sqlite                       (created on demand; observation-recorded — see below)
 ```
 
-…and a SQLite database file under `src/wp-content/database/.ht.sqlite`,
-created on demand by the drop-in the first time WordPress is loaded.
-This file may hold user-authored content (posts, settings, uploads).
+**Side effects of `init` (not envlite-managed; remove with your usual tooling):**
+
+```
+node_modules/                                            (Phase 2 — `npm ci`)
+vendor/                                                  (Phase 4 — `composer install`)
+.composer-home/                                          (Phase 4 — Composer cache)
+src/wp-includes/version.php and other build outputs      (Phase 3 — `npm run build:dev`)
+```
+
+`.ht.sqlite` is created on demand by the SQLite drop-in the first time
+WordPress is loaded. The file may hold user-authored content (posts,
+settings, uploads).
 
 **Observation point:** at the start of every `init` and every `clean`,
 envlite checks whether `src/wp-content/database/.ht.sqlite` exists on
@@ -708,12 +725,11 @@ data.
 present the full list of paths to be removed in a single prompt, then
 delete each entry on confirmation (skipped with `--force`). After the
 batch, remove `.envlite/` itself. Anything **not** in the manifest is
-preserved — `clean` will never touch a user-authored plugin checkout
-under `src/wp-content/plugins/`, a hand-rolled `wp-config.php`, or any
-other off-manifest content.
-
-`envlite clean --keep-deps` removes everything in the manifest *except*
-`node_modules/`, `vendor/`, and `.composer-home/`.
+preserved — `clean` never touches `node_modules/`, `vendor/`,
+`.composer-home/`, build artifacts under `src/`, a user-authored plugin
+checkout under `src/wp-content/plugins/`, a hand-rolled `wp-config.php`,
+or any other off-manifest content. To remove the side-effect dependency
+trees, use `git clean -fdx` or your usual tooling.
 
 ---
 
@@ -828,5 +844,11 @@ explicit user assent. Users who want a fully clean slate run
 - Perform any `composer update` or `npm update`. envlite is reproducible
   from `package-lock.json` and `composer.json`; updates are an explicit
   human action.
+- Manage `node_modules/`, `vendor/`, `.composer-home/`, or build
+  artifacts under `src/`. envlite invokes `npm ci`, `composer install`,
+  and `npm run build:dev` as a convenience during `init`, but treats
+  their outputs as ordinary dev-tool artifacts: not tracked in the
+  manifest, not removed by `clean`. Use `git clean -fdx` or your usual
+  tooling.
 - Manage worktrees. envlite operates on whatever directory it is
   invoked in.
