@@ -537,6 +537,79 @@ function envlite_phase6_install(string $repoRoot, bool $force): void {
     envlite_manifest_save($repoRoot, $manifest);
 }
 
+const ENVLITE_SALT_URL = 'https://api.wordpress.org/secret-key/1.1/salt/';
+
+function envlite_phase7_render(string $sample, int $port, ?string $saltsBlock): string {
+    // 1. DB constants — exactly one of each in the sample.
+    $dbReplacements = [
+        'database_name_here' => 'wordpress',
+        'username_here'      => 'wp',
+        'password_here'      => 'wp',
+    ];
+    foreach ($dbReplacements as $placeholder => $value) {
+        if (substr_count($sample, $placeholder) !== 1) {
+            throw new \RuntimeException("phase 7: placeholder '$placeholder' must appear exactly once");
+        }
+    }
+    $cfg = strtr($sample, $dbReplacements);
+
+    // 2. Salt block: AUTH_KEY through NONCE_SALT, 8 contiguous define()s.
+    if ($saltsBlock !== null) {
+        $pattern = '/define\(\s*\'AUTH_KEY\'.*?define\(\s*\'NONCE_SALT\'\s*,\s*\'[^\']*\'\s*\);/s';
+        $count = preg_match_all($pattern, $cfg, $m);
+        if ($count !== 1) {
+            throw new \RuntimeException("phase 7: expected exactly one salt block, found $count");
+        }
+        $cfg = preg_replace($pattern, $saltsBlock, $cfg, 1);
+    }
+
+    // 3. Inject WP_HOME / WP_SITEURL before the marker.
+    $marker = "/* That's all, stop editing! Happy publishing. */";
+    if (substr_count($cfg, $marker) !== 1) {
+        throw new \RuntimeException("phase 7: expected exactly one marker line");
+    }
+    $inject = "define( 'WP_HOME',    'http://127.0.0.1:$port' );\n"
+            . "define( 'WP_SITEURL', 'http://127.0.0.1:$port' );\n\n";
+    $pos = strpos($cfg, $marker);
+    return substr($cfg, 0, $pos) . $inject . substr($cfg, $pos);
+}
+
+function envlite_phase7_fetch_salts(): ?string {
+    try {
+        $bytes = envlite_http_get(ENVLITE_SALT_URL, 5);
+        // Sanity: must contain 8 define() lines and the keys we care about.
+        if (substr_count($bytes, "define(") < 8 || !str_contains($bytes, 'NONCE_SALT')) {
+            return null;
+        }
+        return rtrim($bytes, "\n");
+    } catch (\Throwable $e) {
+        envlite_log('init', "phase 7: salt fetch failed: " . $e->getMessage() . " (continuing with sample placeholders)");
+        return null;
+    }
+}
+
+function envlite_phase7_install(string $repoRoot, int $port, bool $force): void {
+    $samplePath = "$repoRoot/wp-config-sample.php";
+    $outRel = 'src/wp-config.php';
+    $outAbs = "$repoRoot/$outRel";
+
+    $sample = file_get_contents($samplePath);
+    $salts  = envlite_phase7_fetch_salts();
+    $rendered = envlite_phase7_render($sample, $port, $salts);
+
+    $manifest = envlite_manifest_load($repoRoot);
+    $current  = is_file($outAbs) ? file_get_contents($outAbs) : null;
+    $ownership = envlite_ownership($manifest, $outRel, $current);
+    if ($ownership === 'owned_drifted') {
+        envlite_prompt_or_abort($force, 'init', 'overwrite drifted file', $outRel, $manifest[$outRel], hash('sha256', $current));
+    } elseif ($ownership === 'unowned') {
+        envlite_prompt_or_abort($force, 'init', 'overwrite unowned file', $outRel, null, null);
+    }
+    $hash = envlite_atomic_write($outAbs, $rendered);
+    $manifest[$outRel] = $hash;
+    envlite_manifest_save($repoRoot, $manifest);
+}
+
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
