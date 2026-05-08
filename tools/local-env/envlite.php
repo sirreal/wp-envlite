@@ -610,6 +610,35 @@ function envlite_phase7_install(string $repoRoot, int $port, bool $force): void 
     envlite_manifest_save($repoRoot, $manifest);
 }
 
+function envlite_phase8_router_content(): string {
+    return <<<'PHP'
+<?php
+$path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$file = __DIR__ . '/src' . $path;
+if ($path !== '/' && file_exists($file) && !is_dir($file)) {
+    return false;
+}
+require __DIR__ . '/src/index.php';
+
+PHP;
+}
+
+function envlite_phase8_install(string $repoRoot, bool $force): void {
+    $outRel = 'router.php';
+    $outAbs = "$repoRoot/$outRel";
+    $bytes = envlite_phase8_router_content();
+    $manifest = envlite_manifest_load($repoRoot);
+
+    if (is_file($outAbs) && !isset($manifest[$outRel])) {
+        envlite_prompt_or_abort($force, 'init', 'overwrite unowned file', $outRel, null, null);
+    }
+    // If in manifest: silent overwrite (per spec — router has no user knobs).
+
+    $hash = envlite_atomic_write($outAbs, $bytes);
+    $manifest[$outRel] = $hash;
+    envlite_manifest_save($repoRoot, $manifest);
+}
+
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
