@@ -285,6 +285,17 @@ function envlite_phase0_tool_version(array $cmd): ?array {
     }
 }
 
+function envlite_phase0_required_extensions(): array {
+    $exts = ['pdo_sqlite', 'sqlite3', 'openssl', 'simplexml', 'zip'];
+    if (PHP_OS_FAMILY !== 'Windows') {
+        // pcntl is required on Unix so envlite_run_dev_server can call
+        // pcntl_exec into php -S. Windows lacks pcntl entirely; the
+        // dev-server launcher falls back to proc_open there.
+        $exts[] = 'pcntl';
+    }
+    return $exts;
+}
+
 /** Runs all preflight checks. Calls envlite_log and exits 3 on first failure. */
 function envlite_phase0_run(string $repoRoot): void {
     if (!envlite_phase0_is_wordpress_develop($repoRoot)) {
@@ -295,7 +306,7 @@ function envlite_phase0_run(string $repoRoot): void {
         envlite_log(null, 'preflight: PHP ' . PHP_VERSION . ' is below the 7.4 floor');
         exit(3);
     }
-    foreach (['pdo_sqlite', 'sqlite3', 'openssl', 'simplexml', 'zip'] as $ext) {
+    foreach (envlite_phase0_required_extensions() as $ext) {
         if (!extension_loaded($ext)) {
             envlite_log(null, "preflight: required PHP extension missing: $ext");
             exit(3);

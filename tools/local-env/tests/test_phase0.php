@@ -30,3 +30,29 @@ function test_phase0_version_meets_minimum() {
     envlite_assert(!envlite_phase0_version_ge([20, 9, 0], [20, 10, 0]));
     envlite_assert(!envlite_phase0_version_ge([19, 99, 99], [20, 10, 0]));
 }
+
+function test_phase0_required_extensions_include_pcntl_on_unix() {
+    // The list is the source of truth used by envlite_phase0_run.
+    // We test the *list*, not by re-running phase0 (which exits the test runner).
+    if (PHP_OS_FAMILY === 'Windows') {
+        // On Windows, pcntl is not in the list. Sanity-check the inverse.
+        envlite_assert(
+            !in_array('pcntl', envlite_phase0_required_extensions(), true),
+            'pcntl must NOT be required on Windows'
+        );
+        return;
+    }
+    envlite_assert(
+        in_array('pcntl', envlite_phase0_required_extensions(), true),
+        'pcntl must be required on Unix'
+    );
+}
+
+function test_phase0_required_extensions_includes_existing_set() {
+    foreach (['pdo_sqlite', 'sqlite3', 'openssl', 'simplexml', 'zip'] as $ext) {
+        envlite_assert(
+            in_array($ext, envlite_phase0_required_extensions(), true),
+            "$ext must remain required"
+        );
+    }
+}
