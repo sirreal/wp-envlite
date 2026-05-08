@@ -496,6 +496,47 @@ function envlite_phase5_install(string $repoRoot, bool $force): void {
     envlite_phase5_assert_placeholder($dbCopy);
 }
 
+function envlite_phase6_render(string $sample): string {
+    $replacements = [
+        'youremptytestdbnamehere' => 'wordpress_test',
+        'yourusernamehere'        => 'wp',
+        'yourpasswordhere'        => 'wp',
+    ];
+    foreach ($replacements as $placeholder => $value) {
+        if (substr_count($sample, $placeholder) !== 1) {
+            throw new \RuntimeException("phase 6: placeholder '$placeholder' must appear exactly once");
+        }
+    }
+    $out = strtr($sample, $replacements);
+    foreach (array_keys($replacements) as $placeholder) {
+        if (str_contains($out, $placeholder)) {
+            throw new \RuntimeException("phase 6: placeholder '$placeholder' still present after substitution");
+        }
+    }
+    return $out;
+}
+
+function envlite_phase6_install(string $repoRoot, bool $force): void {
+    $samplePath = "$repoRoot/wp-tests-config-sample.php";
+    $outRel = 'wp-tests-config.php';
+    $outAbs = "$repoRoot/$outRel";
+
+    $sample = file_get_contents($samplePath);
+    $rendered = envlite_phase6_render($sample);
+
+    $manifest = envlite_manifest_load($repoRoot);
+    $current  = is_file($outAbs) ? file_get_contents($outAbs) : null;
+    $ownership = envlite_ownership($manifest, $outRel, $current);
+    if ($ownership === 'owned_drifted') {
+        envlite_prompt_or_abort($force, 'init', 'overwrite drifted file', $outRel, $manifest[$outRel], hash('sha256', $current));
+    } elseif ($ownership === 'unowned') {
+        envlite_prompt_or_abort($force, 'init', 'overwrite unowned file', $outRel, null, null);
+    }
+    $hash = envlite_atomic_write($outAbs, $rendered);
+    $manifest[$outRel] = $hash;
+    envlite_manifest_save($repoRoot, $manifest);
+}
+
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
