@@ -146,16 +146,18 @@ assumptions. Cheap to run and informative on failure.
    - `zip` — required by `ZipArchive` for Phase 5.
 
    `hash` is non-disable-able since PHP 7.4 and is not checked.
-4. `node`, `npm`, `composer` resolve via `PATH`. Resolution is done in
-   pure PHP (no shell): split `getenv('PATH')` on `PATH_SEPARATOR`, and
-   for each segment check whether `<segment>/<binary>` is a file and is
-   executable (`is_file()` && `is_executable()`). The first match wins.
-   This avoids depending on `command -v`, `which`, or any shell builtin.
-5. The reported versions of `node` (≥ 20.10) and `npm` (≥ 10.2). Composer
-   ≥ 2. Versions are obtained by spawning each binary with its
-   version-printing flag (`node --version`, `npm --version`,
-   `composer --version`) via `proc_open` and parsing stdout; envlite
-   does not invoke a shell.
+4. `node`, `npm`, and `composer` are present and meet minimum versions:
+   `node` ≥ 20.10, `npm` ≥ 10.2, `composer` ≥ 2. Each is verified by a
+   single `proc_open` call passing the binary as a command **array**
+   with its version flag — `['node', '--version']`, `['npm', '--version']`,
+   `['composer', '--version']` — and reading stdout. Passing an array
+   (rather than a string) avoids shell invocation entirely; the OS's
+   exec semantics handle binary lookup, including `PATHEXT` resolution
+   on Windows (`node.exe`, `npm.cmd`, `composer.bat`) and `PATH`
+   resolution on Unix. A non-zero exit or a "command not found" failure
+   from `proc_open` means the tool is missing — abort with exit 3 and
+   name the missing tool. A successful spawn whose parsed version
+   string falls below the minimum also aborts with exit 3.
 
 **Outputs:** none. On failure, exit 3 with the failed check identified.
 
