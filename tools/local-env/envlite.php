@@ -644,35 +644,6 @@ function envlite_phase7_install(string $repoRoot, int $port, bool $force): void 
     envlite_manifest_save($repoRoot, $manifest);
 }
 
-function envlite_phase8_router_content(): string {
-    return <<<'PHP'
-<?php
-$path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-$file = __DIR__ . '/src' . $path;
-if ($path !== '/' && file_exists($file) && !is_dir($file)) {
-    return false;
-}
-require __DIR__ . '/src/index.php';
-
-PHP;
-}
-
-function envlite_phase8_install(string $repoRoot, bool $force): void {
-    $outRel = 'router.php';
-    $outAbs = "$repoRoot/$outRel";
-    $bytes = envlite_phase8_router_content();
-    $manifest = envlite_manifest_load($repoRoot);
-
-    if (is_file($outAbs) && !isset($manifest[$outRel])) {
-        envlite_prompt_or_abort($force, 'init', 'overwrite unowned file', $outRel, null, null);
-    }
-    // If in manifest: silent overwrite (per spec — router has no user knobs).
-
-    $hash = envlite_atomic_write($outAbs, $bytes);
-    $manifest[$outRel] = $hash;
-    envlite_manifest_save($repoRoot, $manifest);
-}
-
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
@@ -736,14 +707,13 @@ function envlite_cmd_init(array $args, bool $force): int {
     // Phase 4: composer install
     envlite_phase4_composer_install($repoRoot);
 
-    // Phases 5-8 throw RuntimeException for diagnostic failures (e.g.,
+    // Phases 5-7 throw RuntimeException for diagnostic failures (e.g.,
     // SHA256 mismatch, missing placeholders, I/O errors). Convert each into
     // the spec's `envlite init: phase N: <cause>` line + exit 1.
     $phases = [
         [5, function () use ($repoRoot, $force) { envlite_phase5_install($repoRoot, $force); }],
         [6, function () use ($repoRoot, $force) { envlite_phase6_install($repoRoot, $force); }],
         [7, function () use ($repoRoot, $resolvedPort, $force) { envlite_phase7_install($repoRoot, $resolvedPort, $force); }],
-        [8, function () use ($repoRoot, $force) { envlite_phase8_install($repoRoot, $force); }],
     ];
     foreach ($phases as [$n, $fn]) {
         $rc = envlite_init_phase_guard($n, $fn);
@@ -813,7 +783,7 @@ function envlite_cmd_serve(array $args, bool $force): int {
 
     // Stream the dev server. SIGINT propagates to the child via terminal.
     $exit = envlite_proc_stream(
-        ['php', '-S', "127.0.0.1:$port", '-t', 'src', 'router.php'],
+        ['php', '-S', "127.0.0.1:$port", '-t', 'src', __DIR__ . '/router.php'],
         $repoRoot
     );
     return $exit === 0 ? 0 : 1;

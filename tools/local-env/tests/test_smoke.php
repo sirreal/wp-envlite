@@ -1,7 +1,7 @@
 <?php
 function envlite_test_make_fixture_repo(): string {
     $dir = envlite_test_tmpdir('smoke');
-    // Minimum tree to satisfy Phase 0's CWD check and Phases 5–8.
+    // Minimum tree to satisfy Phase 0's CWD check and Phases 5–7.
     mkdir("$dir/src/wp-includes", 0755, true);
     mkdir("$dir/tests/phpunit/includes", 0755, true);
     mkdir("$dir/src/wp-content/plugins/sqlite-database-integration", 0755, true);
@@ -20,31 +20,28 @@ function envlite_test_make_fixture_repo(): string {
     return $dir;
 }
 
-function test_smoke_phases5_through_8_then_clean() {
+function test_smoke_phases5_through_7_then_clean() {
     $dir = envlite_test_make_fixture_repo();
 
     // Pre-record the plugin tree as envlite-owned so Phase 5 takes the skip branch.
     $manifest = ['src/wp-content/plugins/sqlite-database-integration' => 'dir'];
     envlite_manifest_save($dir, $manifest);
 
-    // Drive Phases 5–8 with --force (no TTY in test).
+    // Drive Phases 5–7 with --force (no TTY in test).
     envlite_phase5_install($dir, true);
     envlite_phase6_install($dir, true);
     envlite_phase7_install($dir, 8421, true);
-    envlite_phase8_install($dir, true);
 
     // Assert artifacts present.
     envlite_assert(is_file("$dir/src/wp-content/db.php"));
     envlite_assert(is_file("$dir/wp-tests-config.php"));
     envlite_assert(is_file("$dir/src/wp-config.php"));
-    envlite_assert(is_file("$dir/router.php"));
 
-    // Manifest contains all four file entries plus the plugin dir.
+    // Manifest contains all three file entries plus the plugin dir.
     $m = envlite_manifest_load($dir);
     envlite_assert(isset($m['src/wp-content/db.php']));
     envlite_assert(isset($m['wp-tests-config.php']));
     envlite_assert(isset($m['src/wp-config.php']));
-    envlite_assert(isset($m['router.php']));
     envlite_assert(isset($m['src/wp-content/plugins/sqlite-database-integration']));
 
     // wp-config.php picked up the port.
@@ -56,7 +53,6 @@ function test_smoke_phases5_through_8_then_clean() {
     @unlink("$dir/.envlite/manifest");
     @rmdir("$dir/.envlite");
 
-    envlite_assert(!is_file("$dir/router.php"));
     envlite_assert(!is_file("$dir/wp-tests-config.php"));
     envlite_assert(!is_file("$dir/src/wp-config.php"));
     envlite_assert(!is_file("$dir/src/wp-content/db.php"));

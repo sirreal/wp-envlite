@@ -1,8 +1,8 @@
 <?php
 function test_format_prompt_path_only() {
     envlite_assert_eq(
-        "envlite init: not envlite-owned: router.php. Overwrite? [y/N] ",
-        envlite_format_prompt('init', 'overwrite', 'router.php', null, null)
+        "envlite init: not envlite-owned: src/wp-config.php. Overwrite? [y/N] ",
+        envlite_format_prompt('init', 'overwrite', 'src/wp-config.php', null, null)
     );
 }
 

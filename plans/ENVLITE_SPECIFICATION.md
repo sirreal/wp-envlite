@@ -134,9 +134,7 @@ foreground. The router is committed at `tools/local-env/router.php`
 alongside `envlite.php`; it is not installed into the repo, the
 manifest does not track it, and `clean` does not remove it. It has
 no inputs (the port is a `php -S` argument, not baked into the file)
-and no user-tunable knobs. Before spawning `php -S`, `serve` checks
-the router asset exists; if missing, it exits 1 with
-`envlite serve: router asset missing at <path> (reinstall envlite)`.
+and no user-tunable knobs.
 
 The router resolves the repo's `src/` via
 `dirname(__DIR__, 2) . '/src'`, returns `false` for files that exist
@@ -144,10 +142,8 @@ on disk so `php -S` serves them directly, and otherwise routes to
 `src/index.php`. WordPress's index.php → wp-blog-header.php →
 wp-load.php → wp-settings.php chain handles the rest, including
 `wp-admin/install.php` on first hit and pretty-permalink fallback
-once installed. The router must be a regular file inside the
-checkout — symlinking it elsewhere breaks `dirname(__DIR__, 2)`
-docroot resolution. The port is consumed only when `serve` runs,
-never at `init` time.
+once installed. The port is consumed only when `serve` runs, never
+at `init` time.
 
 **Bind failure.** If `php -S` exits because the port is already
 bound (another `envlite serve` running, or any other process on

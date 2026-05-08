@@ -15,7 +15,7 @@ function test_manifest_round_trip_preserves_order() {
     mkdir($dir . '/.envlite');
     $entries = [
         '.envlite/port' => 'a3f1c8b2' . str_repeat('0', 56),
-        'router.php' => str_repeat('b', 64),
+        'src/wp-config.php' => str_repeat('b', 64),
         'src/wp-content/plugins/sqlite-database-integration' => 'dir',
     ];
     envlite_manifest_save($dir, $entries);
@@ -27,7 +27,7 @@ function test_manifest_round_trip_preserves_order() {
 function test_manifest_save_emits_lf_only() {
     $dir = envlite_test_tmpdir('manifest-lf');
     mkdir($dir . '/.envlite');
-    envlite_manifest_save($dir, ['router.php' => str_repeat('a', 64)]);
+    envlite_manifest_save($dir, ['src/wp-config.php' => str_repeat('a', 64)]);
     $bytes = file_get_contents($dir . '/.envlite/manifest');
     envlite_assert(strpos($bytes, "\r") === false, 'manifest must not contain CR');
     envlite_assert(substr($bytes, -1) === "\n", 'manifest must end with LF');
@@ -38,11 +38,11 @@ function test_manifest_load_skips_blank_and_malformed_lines() {
     mkdir($dir . '/.envlite');
     file_put_contents(
         $dir . '/.envlite/manifest',
-        str_repeat('a', 64) . "  router.php\n" .
+        str_repeat('a', 64) . "  src/wp-config.php\n" .
         "\n" .
         "garbage line\n" .
         "dir  some/dir\n"
     );
     $loaded = envlite_manifest_load($dir);
-    envlite_assert_eq(['router.php' => str_repeat('a', 64), 'some/dir' => 'dir'], $loaded);
+    envlite_assert_eq(['src/wp-config.php' => str_repeat('a', 64), 'some/dir' => 'dir'], $loaded);
 }

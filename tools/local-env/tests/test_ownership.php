@@ -2,7 +2,7 @@
 function test_ownership_path_absent_when_no_disk_no_manifest() {
     envlite_assert_eq(
         'absent',
-        envlite_ownership([], 'router.php', null)
+        envlite_ownership([], 'src/wp-config.php', null)
     );
 }
 
@@ -11,7 +11,7 @@ function test_ownership_owned_clean() {
     $hash = hash('sha256', $bytes);
     envlite_assert_eq(
         'owned_clean',
-        envlite_ownership(['router.php' => $hash], 'router.php', $bytes)
+        envlite_ownership(['src/wp-config.php' => $hash], 'src/wp-config.php', $bytes)
     );
 }
 
@@ -19,8 +19,8 @@ function test_ownership_owned_drifted() {
     envlite_assert_eq(
         'owned_drifted',
         envlite_ownership(
-            ['router.php' => str_repeat('a', 64)],
-            'router.php',
+            ['src/wp-config.php' => str_repeat('a', 64)],
+            'src/wp-config.php',
             'different bytes'
         )
     );
@@ -29,7 +29,7 @@ function test_ownership_owned_drifted() {
 function test_ownership_unowned() {
     envlite_assert_eq(
         'unowned',
-        envlite_ownership([], 'router.php', "user-authored\n")
+        envlite_ownership([], 'src/wp-config.php', "user-authored\n")
     );
 }
 
