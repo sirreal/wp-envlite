@@ -108,73 +108,12 @@ A green phpunit + a 2xx/3xx HTTP status proves the same thing the old
 
 ---
 
-## Destructive operations and prompts
-
-envlite must not silently overwrite or delete a file it does not
-demonstrably own (see "envlite state directory" below for the ownership
-mechanism). Any operation that would do so prompts the user
-interactively before proceeding.
-
-**Prompt format:** a one-line `[y/N]` prompt naming the operation and the
-file(s) involved, with `N` as the default. Reading a non-y/Y response,
-EOF, or a non-TTY stdin counts as `N` and aborts that operation with
-exit code 5.
-
-**Operations that prompt unless `--force` is passed:**
-
-- Overwriting a file that exists on disk and is **not** recorded in the
-  manifest as envlite-owned. (Phases 5–8.)
-- Deleting any file or directory in `clean`. The default form prompts
-  once with the full list; declining aborts the cleanup.
-
-**Operations that never prompt:**
-
-- Re-creating files envlite owns (recorded in the manifest with a
-  matching content hash). These are silent overwrites — envlite is
-  updating its own output.
-- Adding new files that don't exist yet.
-- Reading anything.
-
-**`--force` semantics:** answer `y` to every prompt envlite would
-otherwise raise during this invocation. Required for non-interactive
-use (CI, scripts). It is the user's responsibility to know what they're
-forcing.
-
----
-
-## envlite state directory (`.envlite/`)
-
-`.envlite/` at the repo root holds envlite's private state. It is not
-tracked by git: on first write, envlite appends `.envlite/` to
-`.git/info/exclude` (or no-ops if already present), since wordpress-
-develop's `.gitignore` is upstream-controlled.
-
-Files inside:
-
-| File | Purpose | Schema |
-|---|---|---|
-| `port` | Cached site port (Phase 1). | A single integer line. |
-| `manifest` | Records every file/directory envlite has written, with the content hash at the time of writing. | One entry per line: `<sha256>  <relative path>` (sha256 over the file's content at write time, or `dir` for a directory). |
-
-The manifest is the authoritative record of "envlite owns this". When
-considering an existing file:
-
-- If the path is in the manifest **and** its current content hash matches
-  the manifest's recorded hash → envlite owns it; safe to silently
-  re-stamp.
-- If the path is in the manifest **but** its current hash has drifted →
-  envlite created it but the user (or another tool) has modified it;
-  prompt before overwriting.
-- If the path is **not** in the manifest → not envlite-owned; prompt
-  before overwriting.
-
-After every write or delete, envlite updates the manifest in place.
-`clean` walks the manifest in reverse insertion order and (after
-prompting) removes each entry, then removes `.envlite/` itself.
-
----
-
 ## Phase 0 — Preflight
+
+> envlite tracks every file it writes in `.envlite/manifest` and never
+> overwrites or deletes anything it doesn't demonstrably own without
+> prompting first. See the **State and ownership** section below the
+> phases for the full contract — it shapes Phases 5–8 and `clean`.
 
 **Purpose:** abort early if the environment cannot satisfy envlite's
 assumptions. Cheap to run and informative on failure.
@@ -202,9 +141,8 @@ assumptions. Cheap to run and informative on failure.
      requirement Phase 4 ignores; verifying it here means the ignore
      flag is decorative, not load-bearing.
    - `zip` — required by `ZipArchive` for Phase 5.
-   - `hash` — required by `hash_file` for Phase 5's pinned-zip check.
-     (`hash` is bundled and enabled by default since PHP 7.4 but a
-     `--disable-hash` build is theoretically possible; check anyway.)
+
+   `hash` is non-disable-able since PHP 7.4 and is not checked.
 4. `node`, `npm`, `composer` resolve via `PATH` (use `proc_open` with
    `command -v` or PHP's own equivalent — but ultimately use a
    PHP-native `PATH` search to avoid depending on a shell).
@@ -294,10 +232,15 @@ function port_is_free(port):
   external process could grab the port between Phase 1 and the user
   starting `envlite serve`, but on a developer laptop this race is
   negligible. `serve` will surface the bind failure if it happens.
-- `init --port=N` bypasses discovery and writes N to the cache. There
-  is no `serve --port=N`; the cache is the source of truth. To pick a
-  different port, either run `init --port=N` or delete `.envlite/port`
-  and re-run.
+- `init --port=N` bypasses hash-based discovery but **still probes**:
+  envlite calls `port_is_free(N)`; if N is currently bound, abort with
+  exit 1 and a one-line message naming the port and suggesting
+  `lsof -nP -iTCP:N -sTCP:LISTEN` to identify the occupant. Only on a
+  successful probe does N get written to the cache. The user is then
+  expected to pass a different `--port` if they really want one.
+- There is no `serve --port=N`; the cache is the source of truth. To
+  pick a different port, either run `init --port=N` or delete
+  `.envlite/port` and re-run.
 
 **Outputs:** `.envlite/port` (text file, single integer); manifest entry.
 
@@ -597,6 +540,12 @@ runtime argument to `php -S`, supplied by `envlite serve`.)
 `<port>` is read from `.envlite/port`. The router is a fixed file; the
 port lives in the cache.
 
+**Bind failure on `envlite serve`:** if `php -S` exits because the port
+is already bound (another `envlite serve` running, or any other process
+on `<port>`), envlite exits 1 with a single stderr line:
+`envlite serve: failed to bind 127.0.0.1:<port>`. No manifest mutation
+occurs.
+
 **How the router works:** `php -S`'s built-in static-file handling
 returns `false` from the router for files that exist on disk (letting
 the server serve them), and otherwise routes to `src/index.php`.
@@ -613,6 +562,114 @@ never gets envlite's bug fixes.
 - Path present, in manifest → silent overwrite (always pick up the
   current canonical content).
 - Path present, **not** in manifest → prompt before overwriting.
+
+---
+
+## State and ownership
+
+These two sections describe envlite's contract with the filesystem.
+They are policy for what the phases above do, not phases themselves;
+the placement here is so the reader has the concrete file-by-file
+picture from Phases 0–8 in mind before evaluating the abstract rules.
+
+### Destructive operations and prompts
+
+envlite must not silently overwrite or delete a file it does not
+demonstrably own (see the manifest below for the ownership mechanism).
+Any operation that would do so prompts the user interactively before
+proceeding.
+
+**Prompt format:** a one-line `[y/N]` prompt naming the operation and the
+file(s) involved, with `N` as the default. Reading a non-y/Y response or
+EOF counts as `N` and aborts that operation with exit code 5. TTY
+detection uses `stream_isatty(STDIN)` (built-in since PHP 7.2; no
+extension dependency).
+
+**Drift prompts include a hash preview:** when the manifest records a
+hash for a path but the current content hashes differently, the prompt
+includes the first 8 hex chars of each side, e.g.
+`envlite owns wp-tests-config.php but content has drifted (recorded a3f1c8b2…, current 9e07d44a…). Overwrite? [y/N]`.
+Path-only ("not in manifest") prompts skip the hash preview.
+
+**Non-interactive contexts (no TTY) without `--force`:** envlite writes a
+single line to stderr —
+`envlite: non-interactive context and --force not given; aborting at <operation> on <path>` —
+and exits 5. CI runners that omitted `--force` get an immediately
+actionable signal, not silent failure.
+
+**Operations that prompt unless `--force` is passed:**
+
+- Overwriting a file that exists on disk and is **not** recorded in the
+  manifest as envlite-owned. (Phases 5–8.)
+- Overwriting a file that **is** in the manifest but whose current
+  content hash has drifted from the recorded hash.
+- Deleting any file or directory in `clean`. The default form prompts
+  once with the full list; declining aborts the cleanup.
+
+**Operations that never prompt:**
+
+- Re-creating files envlite owns (recorded in the manifest with a
+  matching content hash). These are silent overwrites — envlite is
+  updating its own output.
+- Adding new files that don't exist yet.
+- Reading anything.
+
+**`--force` semantics:** answer `y` to every prompt envlite would
+otherwise raise during this invocation. Required for non-interactive
+use (CI, scripts). It is the user's responsibility to know what they're
+forcing.
+
+### envlite state directory (`.envlite/`)
+
+`.envlite/` at the repo root holds envlite's private state. envlite does
+**not** modify `.gitignore`, `.git/info/exclude`, or any other git
+configuration. Adding `.envlite/` to wordpress-develop's `.gitignore` is
+an upstream concern; in the meantime users can git-ignore the directory
+locally with `echo '/.envlite/' >> .git/info/exclude` themselves.
+
+Files inside:
+
+| File | Purpose | Schema |
+|---|---|---|
+| `port` | Cached site port (Phase 1). | A single integer line. |
+| `manifest` | Records every file/directory envlite has written, with the content hash at the time of writing. | One entry per line: `<sha256>  <relative path>` (sha256 over the file's content at write time; `dir` in the hash field for a directory entry). |
+
+**Path canonicalization.** Paths in the manifest use POSIX `/`
+separators, are relative to the repo root, and are NFC-normalized
+(macOS APFS otherwise produces inconsistent forms across `init` runs
+when filenames contain composed/decomposed Unicode). Other
+canonicalization details (duplicate handling, which directories get
+`dir` entries) are implementation-defined.
+
+**Manifest immutability.** The manifest is envlite-managed. Hand-editing
+it (reordering lines, rewriting hashes) produces undefined behavior on
+the next `init` or `clean`. Users who need to "forget" an envlite-owned
+path should run `envlite clean` (with `--keep-deps` if they want to keep
+the slow-to-rebuild parts) and re-`init`.
+
+**Atomic writes.** Every file envlite writes — whether content
+(`router.php`, `wp-config.php`, etc.) or the manifest itself — uses the
+write-temp + fsync + rename pattern: write to a sibling `.tmp` path,
+fsync, `rename()` over the final path. The manifest entry update
+happens after the content rename, also atomic-replace. A SIGINT mid-
+operation leaves either fully-pre-write or fully-post-write state on
+disk; no half-written file claims a hash for content that wasn't
+durable.
+
+**Ownership decisions** (consulted by Phases 5–8):
+
+- Path in manifest **and** current content hash matches → envlite owns
+  it; safe to silently re-stamp.
+- Path in manifest **but** current hash has drifted → envlite created
+  it, the user (or another tool) has modified it; prompt before
+  overwriting (drift prompt includes hash preview).
+- Path **not** in manifest → not envlite-owned; prompt before
+  overwriting.
+
+`clean` walks the manifest in reverse insertion order and (after
+prompting) removes each entry, then removes `.envlite/` itself. Manifest
+order is the order envlite wrote things; since users are not supposed
+to edit the manifest, that order is well-defined.
 
 ---
 
@@ -669,9 +726,11 @@ Strict dependency graph:
   Phase 8 does not consume the port; only `envlite serve` does, at
   invocation time.
 - Phase 2 → Phase 3 (`build:dev` needs `node_modules/`).
-- Phase 5 → Phase 7 (the SQLite drop-in must be in place before
-  `src/wp-config.php` is generated, so the assumption that the runtime
-  uses SQLite is internally consistent at any moment).
+- Phase 5 → Phase 6 and Phase 5 → Phase 7. Both config files assume
+  the SQLite drop-in is the active DB layer at any moment between
+  phases. Violating either edge (running 6 or 7 first) is harmless to
+  the final state but breaks the "internally consistent at every
+  step" invariant.
 
 Phases 1, 2, 4, 5, 6 are mutually independent and could be run in
 parallel. envlite v1 runs them serially: the wall-time savings (~5 s)
