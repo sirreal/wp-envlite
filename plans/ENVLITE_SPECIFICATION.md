@@ -634,12 +634,18 @@ src/wp-config.php                                        (Phase 7)
 router.php                                               (Phase 8)
 ```
 
-…and a SQLite database file under `src/wp-content/database/.ht.sqlite`
-the first time WordPress is loaded. The drop-in creates this on demand
-and may include user-authored content (posts, settings, uploads) — so
-envlite records the path in the manifest the first time it observes the
-file's existence (during a post-Phase-9 check, or on the next `init`).
-`clean` then knows to prompt for it specifically alongside the rest.
+…and a SQLite database file under `src/wp-content/database/.ht.sqlite`,
+created on demand by the drop-in the first time WordPress is loaded.
+This file may hold user-authored content (posts, settings, uploads).
+
+**Observation point:** at the start of every `init` and every `clean`,
+envlite checks whether `src/wp-content/database/.ht.sqlite` exists on
+disk and is not yet in the manifest; if so, envlite adds an entry
+recording the file's hash at that moment. This guarantees that a
+`clean` invoked after `serve` (without an intervening `init`) still
+treats the DB as envlite-tracked content and prompts before removing
+it, rather than silently leaving an orphan or silently deleting user
+data.
 
 **`clean` semantics:** walk the manifest in reverse insertion order,
 present the full list of paths to be removed in a single prompt, then
