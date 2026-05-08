@@ -29,7 +29,9 @@ performs all file operations, hashing, HTTP fetches, and zip extraction
 through PHP's standard library (`file_get_contents` with stream context,
 `hash_file`, `ZipArchive`, `preg_replace`, `str_replace`, `proc_open`).
 Subprocesses spawned by envlite are limited to `node`/`npm`/`composer`,
-plus the host `php` itself when launching the dev server.
+plus the host `php` itself in two places: launching the dev server
+(`envlite serve`) and running the Phase 8 site install (script piped
+to the subprocess via stdin).
 
 ---
 
@@ -93,8 +95,11 @@ care about:
 envlite serve  &  curl -sI http://127.0.0.1:$(cat .envlite/port)/
 ```
 
-A green phpunit + a 2xx/3xx HTTP status proves the same thing the old
-`verify` did, with less ceremony.
+A green phpunit + a 2xx HTTP status (not a 3xx redirect to
+`/wp-admin/install.php`) proves the same thing the old `verify` did,
+with less ceremony. Phase 8 has already run `wp_install()`, so the
+site responds with the homepage on first hit. Log in at
+`/wp-login.php` with `admin` / `password`.
 
 ### Exit codes
 
@@ -597,6 +602,84 @@ phpunit config doesn't care.
 
 ---
 
+## Phase 8 — Site install
+
+**Purpose:** run `wp_install()` so the site is immediately browsable
+on first visit. Without this phase WordPress sees no DB tables and
+redirects to `wp-admin/install.php`, forcing the user through a
+manual install flow that envlite already has all the inputs to
+script.
+
+**Operation:** envlite spawns a fresh `php` subprocess
+(`proc_open([PHP_BINARY], …)`) and pipes the install script via
+stdin — no second committed asset alongside `router.php`, and full
+process isolation from `wp-settings.php`'s many side effects
+(constants, autoloaders, shutdown handlers, `wp_die`). The script
+template is a nowdoc inside `envlite.php`; `$repoRoot` and `$port`
+are interpolated via `strtr()` with `var_export()`'d literals so
+unusual paths cannot break the script.
+
+The script body:
+
+1. Sets `$_SERVER['HTTP_HOST']` to `127.0.0.1:<port>` (and a few
+   companions). Required because `wp_install()` calls
+   `wp_guess_url()` which reads `$_SERVER`; without this, WP would
+   write a CLI-derived URL into the `siteurl` option. (Functionally
+   moot at runtime — `WP_SITEURL` from Phase 7 is a defined constant
+   and overrides the option — but belt-and-suspenders.)
+2. `define('WP_INSTALLING', true)` before loading WP.
+3. `require_once src/wp-load.php` — picks up `src/wp-config.php`
+   (and through it the SQLite drop-in via `wp-content/db.php`).
+4. `require_once ABSPATH . 'wp-admin/includes/upgrade.php'`.
+5. If `is_blog_installed()` is true → `exit(0)` (idempotent re-run).
+6. Otherwise call `wp_install('WordPress Develop Envlite', 'admin',
+   'admin@example.com', false, '', 'password')` and assert
+   `$result['user_id']` is non-empty (writes to STDERR and
+   `exit(1)` otherwise).
+
+A non-zero subprocess exit causes the parent (`envlite_phase8_install_site`)
+to throw with the first non-empty stderr line as the cause; the
+existing `envlite_init_phase_guard()` converts that into
+`envlite init: phase 8: install subprocess: <cause>` + exit 1.
+
+**Inputs:** `src/wp-config.php` (Phase 7), `.envlite/port` (Phase 1),
+populated `vendor/` (Phase 4), populated build outputs (Phase 3 —
+`wp-load.php` requires `src/wp-includes/version.php`).
+
+**Outputs:** DB tables, default options/roles, single admin user
+inside `src/wp-content/database/.ht.sqlite`. The DB file itself is
+not added to the manifest by this phase; envlite's existing
+observation hook records it on the next `init` or `clean`.
+
+**Fixed credentials:** the username, email, password, and site title
+above are deliberately not configurable. envlite is a dev-only tool;
+configurability would just mean per-checkout drift with no benefit.
+Match the test bootstrap conventions
+(`tests/phpunit/includes/install.php` uses the same `admin` / `password`).
+
+**Idempotency:** anchored on `is_blog_installed()`.
+
+- DB tables absent → install.
+- DB tables present (e.g. user already ran `init` once, or wiped
+  `.ht.sqlite` and re-installed manually) → silent no-op.
+- envlite **never** drops tables. User-authored posts/pages/uploads
+  survive any number of `envlite init` re-runs. The test bootstrap
+  pattern of "drop everything and re-install" is appropriate for
+  CI's clean-slate semantics but wrong for a dev tool.
+
+**Failure modes:**
+
+| Symptom | Cause | Remediation |
+|---|---|---|
+| phase 8 fails with "version.php" or "ABSPATH" error | `init --no-build` on a fresh checkout | re-run `init` without `--no-build` |
+| phase 8 fails with a DB error | corrupt `.ht.sqlite` from a prior interrupted run | delete `src/wp-content/database/.ht.sqlite`, re-run `init` |
+| phase 8 fails with a salt-related notice | rare; salt fetch in Phase 7 left placeholder strings | not a real failure mode; placeholders are accepted |
+
+**`--force` interaction:** none. The phase is non-destructive (it
+only writes into an empty DB) and asks no prompts.
+
+---
+
 ## State and ownership
 
 These two sections describe envlite's contract with the filesystem.
@@ -742,7 +825,7 @@ src/wp-content/plugins/sqlite-database-integration/      (Phase 5)
 src/wp-content/db.php                                    (Phase 5)
 wp-tests-config.php                                      (Phase 6)
 src/wp-config.php                                        (Phase 7)
-src/wp-content/database/.ht.sqlite                       (created on demand; observation-recorded — see below)
+src/wp-content/database/.ht.sqlite                       (populated by Phase 8; observation-recorded — see below)
 ```
 
 **Side effects of `init` (not envlite-managed; remove with your usual tooling):**
@@ -753,9 +836,10 @@ vendor/                                                  (Phase 4 — `composer 
 src/wp-includes/version.php and other build outputs      (Phase 3 — `npm run build:dev`)
 ```
 
-`.ht.sqlite` is created on demand by the SQLite drop-in the first time
-WordPress is loaded. The file may hold user-authored content (posts,
-settings, uploads).
+`.ht.sqlite` is created by the SQLite drop-in the first time
+WordPress is loaded — Phase 8 is now that first load, so the file
+exists by the time `init` returns. The file may hold user-authored
+content (posts, settings, uploads).
 
 **Observation point:** at the start of every `init` and every `clean`,
 envlite checks whether `src/wp-content/database/.ht.sqlite` exists on
@@ -793,11 +877,19 @@ Strict dependency graph:
   phases. Violating either edge (running 6 or 7 first) is harmless to
   the final state but breaks the "internally consistent at every
   step" invariant.
+- Phase 3 → Phase 8 (Phase 8 loads `wp-load.php` which requires
+  `src/wp-includes/version.php`, generated by `build:dev`).
+- Phase 4 → Phase 8 (Phase 8 loads `wp-settings.php` which requires
+  composer's autoload for some included libs).
+- Phase 5 → Phase 8 (Phase 8 issues DB queries; the SQLite drop-in
+  must be active).
+- Phase 7 → Phase 8 (Phase 8 loads `src/wp-config.php`).
 
 Phases 1, 2, 4, 5, 6 are mutually independent and could be run in
 parallel. envlite v1 runs them serially: the wall-time savings (~5 s)
 are not worth the output-interleaving and error-handling complexity in
-the initial implementation. A future revision may parallelize.
+the initial implementation. A future revision may parallelize. Phase
+8 must always run last in `init` — it has the most predecessors.
 
 ---
 
@@ -827,6 +919,7 @@ Phase-specific notes:
 | 5 (SQLite drop-in) | Skips download if the local plugin's `db.copy` is present; copies `db.copy` → `db.php` either way. |
 | 6 (`wp-tests-config.php`) | Manifest contract above. |
 | 7 (`src/wp-config.php`) | Manifest contract above. Re-stamp interpolates the current Phase 1 port. |
+| 8 (site install) | Always spawns the install subprocess; the subprocess short-circuits via `is_blog_installed()`. envlite never drops tables. |
 
 `envlite init` is safe to re-run on a half-configured repo: paths
 envlite owns get refreshed silently, paths it doesn't own require
@@ -870,6 +963,23 @@ explicit user assent. Users who want a fully clean slate run
 10. **Destructive-by-default is forbidden.** envlite never overwrites
     or deletes a file it doesn't demonstrably own without asking.
     `--force` exists for CI; humans get a prompt every time.
+11. **Phase 8 pipes its install script via stdin to a fresh `php`.**
+    The two natural alternatives both lose: (a) loading WP
+    in-process couples envlite's exit semantics to `wp_die` and any
+    side effect of `wp-settings.php`; (b) shipping a second committed
+    asset alongside `router.php` adds repository surface area for a
+    one-off bootstrap. The stdin pipe gets full subprocess
+    isolation without an extra file — the install script is a
+    nowdoc heredoc inside `envlite.php`, with `$repoRoot` / `$port`
+    substituted via `strtr()` of `var_export()`'d literals so the
+    template body needs no escaping. `PHP_BINARY` is used so the
+    subprocess is the same PHP that's running envlite.
+12. **Phase 8 never drops tables.** The test bootstrap drops and
+    re-creates on every run because CI wants clean-slate semantics;
+    envlite is a dev tool and the same behavior would silently
+    delete posts/pages/uploads on every `init`. envlite gates on
+    `is_blog_installed()` and skips if true. Users who want a clean
+    slate run `envlite clean` (which prompts for `.ht.sqlite`).
 
 ---
 
@@ -880,10 +990,12 @@ explicit user assent. Users who want a fully clean slate run
 - Start or stop the web server in the background. `envlite serve` runs
   in the foreground and respects Ctrl-C.
 - Manage the SQLite database file itself. The drop-in creates
-  `src/wp-content/database/.ht.sqlite` on demand. envlite records the
-  file in the manifest the first time it observes the file's
-  existence; `clean` then prompts for it explicitly (the file may hold
-  user-authored content).
+  `src/wp-content/database/.ht.sqlite` when WordPress first loads;
+  Phase 8 triggers that load by running `wp_install()`, but envlite
+  does not own the file's bytes. envlite records the file in the
+  manifest the first time it observes the file's existence; `clean`
+  then prompts for it explicitly (the file may hold user-authored
+  content).
 - Install global tools (PHP, node, composer) — Phase 0 just verifies.
 - Configure HTTPS or a production-shaped reverse proxy.
 - Perform any `composer update` or `npm update`. envlite is reproducible

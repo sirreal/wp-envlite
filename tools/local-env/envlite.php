@@ -644,6 +644,85 @@ function envlite_phase7_install(string $repoRoot, int $port, bool $force): void 
     envlite_manifest_save($repoRoot, $manifest);
 }
 
+/**
+ * Phase 8 — bootstrap WP and run wp_install if not already installed.
+ *
+ * Runs in a fresh `php` subprocess. The script is piped via stdin (no
+ * second committed asset to ship alongside router.php). Subprocess
+ * isolation keeps wp-settings.php's many side effects (constants,
+ * autoloaders, shutdown handlers, wp_die) from corrupting envlite's
+ * own process or its exit semantics.
+ */
+function envlite_phase8_install_site(string $repoRoot, int $port): void {
+    // Nowdoc — no $variable expansion in the template; values are
+    // substituted via strtr() with var_export()'d literals so a path
+    // with quotes/spaces can't break the script.
+    $tmpl = <<<'PHP'
+<?php
+// envlite Phase 8 — site install. Loaded into a fresh `php` process via stdin.
+$repo_root = __REPO_ROOT__;
+$port      = __PORT__;
+
+$_SERVER['HTTP_HOST']      = "127.0.0.1:$port";
+$_SERVER['SERVER_NAME']    = '127.0.0.1';
+$_SERVER['REQUEST_URI']    = '/';
+$_SERVER['REQUEST_METHOD'] = 'GET';
+
+if (!defined('WP_INSTALLING')) {
+    define('WP_INSTALLING', true);
+}
+
+require_once "$repo_root/src/wp-load.php";
+require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+if (is_blog_installed()) {
+    exit(0);
+}
+
+$result = wp_install(
+    'WordPress Develop Envlite',
+    'admin',
+    'admin@example.com',
+    false,
+    '',
+    'password'
+);
+if (empty($result['user_id'])) {
+    fwrite(STDERR, "wp_install returned no user_id\n");
+    exit(1);
+}
+exit(0);
+PHP;
+
+    $script = strtr($tmpl, [
+        '__REPO_ROOT__' => var_export($repoRoot, true),
+        '__PORT__'      => (string) $port,
+    ]);
+
+    $proc = @proc_open(
+        [PHP_BINARY],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        $repoRoot
+    );
+    if (!is_resource($proc)) {
+        throw new \RuntimeException('failed to spawn php subprocess');
+    }
+    fwrite($pipes[0], $script);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $exit = proc_close($proc);
+
+    if ($exit !== 0) {
+        $msg = trim($stderr !== '' ? $stderr : ($stdout ?: ''));
+        $first = $msg === '' ? "exit $exit" : strtok($msg, "\n");
+        throw new \RuntimeException("install subprocess: $first");
+    }
+}
+
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
@@ -714,13 +793,14 @@ function envlite_cmd_init(array $args, bool $force): int {
         [5, function () use ($repoRoot, $force) { envlite_phase5_install($repoRoot, $force); }],
         [6, function () use ($repoRoot, $force) { envlite_phase6_install($repoRoot, $force); }],
         [7, function () use ($repoRoot, $resolvedPort, $force) { envlite_phase7_install($repoRoot, $resolvedPort, $force); }],
+        [8, function () use ($repoRoot, $resolvedPort) { envlite_phase8_install_site($repoRoot, $resolvedPort); }],
     ];
     foreach ($phases as [$n, $fn]) {
         $rc = envlite_init_phase_guard($n, $fn);
         if ($rc !== 0) { return $rc; }
     }
 
-    fwrite(STDERR, "envlite init: ok (port $resolvedPort)\n");
+    fwrite(STDERR, "envlite init: ok — http://127.0.0.1:$resolvedPort/ (admin / password)\n");
     return 0;
 }
 
