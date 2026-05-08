@@ -18,7 +18,7 @@ charter.
   `pdo_sqlite`, `sqlite3`, `openssl`, `simplexml`, `zip`, and `hash`
   extensions loaded. Phase 0 verifies the full set; the brief here
   just names the unavoidable ones.
-- host `node` ≥ 20.10, `npm` ≥ 10.2.
+- host `node` ≥ 20.10, `npm` ≥ 10.2.3 (matching `package.json` `engines`).
 - host `composer` ≥ 2.
 - the SQLite Database Integration plugin from wordpress.org, pinned by
   SHA256: `44be096a14ebcea424b5e4bf764436ec85fb067f74ab47822c4c5346df21591e`.
@@ -167,7 +167,9 @@ assumptions. Cheap to run and informative on failure.
 
    `hash` is non-disable-able since PHP 7.4 and is not checked.
 4. `node`, `npm`, and `composer` are present and meet minimum versions:
-   `node` ≥ 20.10, `npm` ≥ 10.2, `composer` ≥ 2. Each is verified by a
+   `node` ≥ 20.10, `npm` ≥ 10.2.3, `composer` ≥ 2. The `npm` floor matches
+   `package.json`'s `engines.npm` so preflight catches the same constraint
+   `npm ci` would otherwise hit later. Each is verified by a
    single `proc_open` call passing the binary as a command **array**
    with its version flag — `['node', '--version']`, `['npm', '--version']`,
    `['composer', '--version']` — and reading stdout. Passing an array

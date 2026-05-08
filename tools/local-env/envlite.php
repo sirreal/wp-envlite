@@ -39,8 +39,9 @@ function envlite_path_relative_to(string $root, string $abs): string {
     $root = rtrim(envlite_path_to_posix($root), '/');
     $abs = envlite_path_to_posix($abs);
     if ($abs === $root) { return ''; }
-    if (str_starts_with($abs, $root . '/')) {
-        return substr($abs, strlen($root) + 1);
+    $prefix = $root . '/';
+    if (substr($abs, 0, strlen($prefix)) === $prefix) {
+        return substr($abs, strlen($prefix));
     }
     throw new \InvalidArgumentException("path outside repo root: $abs");
 }
@@ -301,7 +302,7 @@ function envlite_phase0_run(string $repoRoot): void {
     }
     $tools = [
         ['node',     ['node', '--version'],     [20, 10, 0]],
-        ['npm',      ['npm', '--version'],      [10, 2, 0]],
+        ['npm',      ['npm', '--version'],      [10, 2, 3]],
         ['composer', ['composer', '--version'], [2, 0, 0]],
     ];
     foreach ($tools as [$name, $cmd, $min]) {
@@ -437,8 +438,8 @@ function envlite_phase5_verify_sha256(string $path, string $expected): void {
 }
 
 function envlite_phase5_assert_placeholder(string $dbCopyPath): void {
-    $bytes = file_get_contents($dbCopyPath);
-    if ($bytes === false || !str_contains($bytes, ENVLITE_SQLITE_PLACEHOLDER)) {
+    $bytes = @file_get_contents($dbCopyPath);
+    if ($bytes === false || strpos($bytes, ENVLITE_SQLITE_PLACEHOLDER) === false) {
         throw new \RuntimeException(
             "tripwire: " . ENVLITE_SQLITE_PLACEHOLDER . " placeholder missing from $dbCopyPath; spec assumption broken"
         );
@@ -479,15 +480,24 @@ function envlite_phase5_install(string $repoRoot, bool $force): void {
 
     // Step 5: copy db.copy → db.php with manifest contract.
     if (!is_file($dbCopy)) {
-        throw new \RuntimeException("db.copy missing at $dbCopy after extraction");
+        throw new \RuntimeException("phase 5: db.copy missing at $dbCopy after extraction");
     }
-    $dbBytes = file_get_contents($dbCopy);
+    $dbBytes = @file_get_contents($dbCopy);
+    if ($dbBytes === false) {
+        throw new \RuntimeException("phase 5: cannot read $dbCopy");
+    }
     $dbPhpAbs = "$repoRoot/$dbPhpRel";
-    $current = is_file($dbPhpAbs) ? file_get_contents($dbPhpAbs) : null;
+    $current = null;
+    if (is_file($dbPhpAbs)) {
+        $current = @file_get_contents($dbPhpAbs);
+        if ($current === false) {
+            throw new \RuntimeException("phase 5: cannot read $dbPhpAbs");
+        }
+    }
     $ownership = envlite_ownership($manifest, $dbPhpRel, $current);
     if ($ownership === 'owned_drifted') {
         $rec = $manifest[$dbPhpRel];
-        $cur = hash('sha256', $current);
+        $cur = $current !== null ? hash('sha256', $current) : null;
         envlite_prompt_or_abort($force, 'init', 'overwrite drifted file', $dbPhpRel, $rec, $cur);
     } elseif ($ownership === 'unowned') {
         envlite_prompt_or_abort($force, 'init', 'overwrite unowned file', $dbPhpRel, null, null);
@@ -513,7 +523,7 @@ function envlite_phase6_render(string $sample): string {
     }
     $out = strtr($sample, $replacements);
     foreach (array_keys($replacements) as $placeholder) {
-        if (str_contains($out, $placeholder)) {
+        if (strpos($out, $placeholder) !== false) {
             throw new \RuntimeException("phase 6: placeholder '$placeholder' still present after substitution");
         }
     }
@@ -525,14 +535,24 @@ function envlite_phase6_install(string $repoRoot, bool $force): void {
     $outRel = 'wp-tests-config.php';
     $outAbs = "$repoRoot/$outRel";
 
-    $sample = file_get_contents($samplePath);
+    $sample = @file_get_contents($samplePath);
+    if ($sample === false) {
+        throw new \RuntimeException("phase 6: cannot read $samplePath");
+    }
     $rendered = envlite_phase6_render($sample);
 
     $manifest = envlite_manifest_load($repoRoot);
-    $current  = is_file($outAbs) ? file_get_contents($outAbs) : null;
+    $current  = null;
+    if (is_file($outAbs)) {
+        $current = @file_get_contents($outAbs);
+        if ($current === false) {
+            throw new \RuntimeException("phase 6: cannot read $outAbs");
+        }
+    }
     $ownership = envlite_ownership($manifest, $outRel, $current);
     if ($ownership === 'owned_drifted') {
-        envlite_prompt_or_abort($force, 'init', 'overwrite drifted file', $outRel, $manifest[$outRel], hash('sha256', $current));
+        $cur = $current !== null ? hash('sha256', $current) : null;
+        envlite_prompt_or_abort($force, 'init', 'overwrite drifted file', $outRel, $manifest[$outRel], $cur);
     } elseif ($ownership === 'unowned') {
         envlite_prompt_or_abort($force, 'init', 'overwrite unowned file', $outRel, null, null);
     }
@@ -582,7 +602,7 @@ function envlite_phase7_fetch_salts(): ?string {
     try {
         $bytes = envlite_http_get(ENVLITE_SALT_URL, 5);
         // Sanity: must contain 8 define() lines and the keys we care about.
-        if (substr_count($bytes, "define(") < 8 || !str_contains($bytes, 'NONCE_SALT')) {
+        if (substr_count($bytes, "define(") < 8 || strpos($bytes, 'NONCE_SALT') === false) {
             return null;
         }
         return rtrim($bytes, "\n");
@@ -597,15 +617,25 @@ function envlite_phase7_install(string $repoRoot, int $port, bool $force): void 
     $outRel = 'src/wp-config.php';
     $outAbs = "$repoRoot/$outRel";
 
-    $sample = file_get_contents($samplePath);
+    $sample = @file_get_contents($samplePath);
+    if ($sample === false) {
+        throw new \RuntimeException("phase 7: cannot read $samplePath");
+    }
     $salts  = envlite_phase7_fetch_salts();
     $rendered = envlite_phase7_render($sample, $port, $salts);
 
     $manifest = envlite_manifest_load($repoRoot);
-    $current  = is_file($outAbs) ? file_get_contents($outAbs) : null;
+    $current  = null;
+    if (is_file($outAbs)) {
+        $current = @file_get_contents($outAbs);
+        if ($current === false) {
+            throw new \RuntimeException("phase 7: cannot read $outAbs");
+        }
+    }
     $ownership = envlite_ownership($manifest, $outRel, $current);
     if ($ownership === 'owned_drifted') {
-        envlite_prompt_or_abort($force, 'init', 'overwrite drifted file', $outRel, $manifest[$outRel], hash('sha256', $current));
+        $cur = $current !== null ? hash('sha256', $current) : null;
+        envlite_prompt_or_abort($force, 'init', 'overwrite drifted file', $outRel, $manifest[$outRel], $cur);
     } elseif ($ownership === 'unowned') {
         envlite_prompt_or_abort($force, 'init', 'overwrite unowned file', $outRel, null, null);
     }
@@ -706,20 +736,37 @@ function envlite_cmd_init(array $args, bool $force): int {
     // Phase 4: composer install
     envlite_phase4_composer_install($repoRoot);
 
-    // Phase 5: SQLite drop-in (must precede 6 and 7)
-    envlite_phase5_install($repoRoot, $force);
-
-    // Phase 6: wp-tests-config.php
-    envlite_phase6_install($repoRoot, $force);
-
-    // Phase 7: src/wp-config.php (consumes port)
-    envlite_phase7_install($repoRoot, $resolvedPort, $force);
-
-    // Phase 8: router.php
-    envlite_phase8_install($repoRoot, $force);
+    // Phases 5-8 throw RuntimeException for diagnostic failures (e.g.,
+    // SHA256 mismatch, missing placeholders, I/O errors). Convert each into
+    // the spec's `envlite init: phase N: <cause>` line + exit 1.
+    $phases = [
+        [5, function () use ($repoRoot, $force) { envlite_phase5_install($repoRoot, $force); }],
+        [6, function () use ($repoRoot, $force) { envlite_phase6_install($repoRoot, $force); }],
+        [7, function () use ($repoRoot, $resolvedPort, $force) { envlite_phase7_install($repoRoot, $resolvedPort, $force); }],
+        [8, function () use ($repoRoot, $force) { envlite_phase8_install($repoRoot, $force); }],
+    ];
+    foreach ($phases as [$n, $fn]) {
+        $rc = envlite_init_phase_guard($n, $fn);
+        if ($rc !== 0) { return $rc; }
+    }
 
     fwrite(STDERR, "envlite init: ok (port $resolvedPort)\n");
     return 0;
+}
+
+function envlite_init_phase_guard(int $n, callable $fn): int {
+    try {
+        $fn();
+        return 0;
+    } catch (\Throwable $e) {
+        $msg = $e->getMessage();
+        $prefix = "phase $n: ";
+        if (strpos($msg, $prefix) !== 0) {
+            $msg = $prefix . $msg;
+        }
+        envlite_log('init', $msg);
+        return 1;
+    }
 }
 
 function envlite_observe_ht_sqlite(string $repoRoot): void {
@@ -728,7 +775,10 @@ function envlite_observe_ht_sqlite(string $repoRoot): void {
     if (!is_file($abs)) { return; }
     $manifest = envlite_manifest_load($repoRoot);
     if (isset($manifest[$rel])) { return; }
-    $bytes = file_get_contents($abs);
+    $bytes = @file_get_contents($abs);
+    // Read failure: leave the file unrecorded rather than capturing the
+    // empty-string hash. clean will treat it as user-owned, which is correct.
+    if ($bytes === false) { return; }
     $manifest[$rel] = hash('sha256', $bytes);
     envlite_manifest_save($repoRoot, $manifest);
 }

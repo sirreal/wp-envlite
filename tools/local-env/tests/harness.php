@@ -23,7 +23,7 @@ function envlite_test_run(string $dir): int {
     $after = get_defined_functions()['user'];
     $tests = array_values(array_filter(
         array_diff($after, $before),
-        fn($fn) => str_starts_with($fn, 'test_')
+        fn($fn) => substr($fn, 0, 5) === 'test_'
     ));
     sort($tests);
     $failures = 0;

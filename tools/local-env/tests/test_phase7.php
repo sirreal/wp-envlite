@@ -2,10 +2,10 @@
 function test_phase7_render_substitutes_db_constants() {
     $sample = file_get_contents(dirname(__DIR__, 3) . '/wp-config-sample.php');
     $out = envlite_phase7_render($sample, 8421, null);
-    envlite_assert(str_contains($out, "'wordpress'"), 'DB_NAME substituted');
-    envlite_assert(!str_contains($out, 'database_name_here'));
-    envlite_assert(!str_contains($out, 'username_here'));
-    envlite_assert(!str_contains($out, 'password_here'));
+    envlite_assert(strpos($out, "'wordpress'") !== false, 'DB_NAME substituted');
+    envlite_assert(strpos($out, 'database_name_here') === false);
+    envlite_assert(strpos($out, 'username_here') === false);
+    envlite_assert(strpos($out, 'password_here') === false);
 }
 
 function test_phase7_render_injects_wp_home_siteurl_before_marker() {
@@ -14,8 +14,8 @@ function test_phase7_render_injects_wp_home_siteurl_before_marker() {
     $home = "define( 'WP_HOME',    'http://127.0.0.1:8421' );";
     $site = "define( 'WP_SITEURL', 'http://127.0.0.1:8421' );";
     $marker = "/* That's all, stop editing! Happy publishing. */";
-    envlite_assert(str_contains($out, $home));
-    envlite_assert(str_contains($out, $site));
+    envlite_assert(strpos($out, $home) !== false);
+    envlite_assert(strpos($out, $site) !== false);
     // injection must precede the marker
     envlite_assert(strpos($out, $home) < strpos($out, $marker), 'WP_HOME must be before marker');
     envlite_assert(strpos($out, $site) < strpos($out, $marker), 'WP_SITEURL must be before marker');
@@ -32,7 +32,7 @@ function test_phase7_render_replaces_salts_when_provided() {
            . "define( 'LOGGED_IN_SALT', 'XYZ' );\n"
            . "define( 'NONCE_SALT', 'XYZ' );";
     $out = envlite_phase7_render($sample, 8421, $salts);
-    envlite_assert(!str_contains($out, "'put your unique phrase here'"));
+    envlite_assert(strpos($out, "'put your unique phrase here'") === false);
     envlite_assert(substr_count($out, "'XYZ'") === 8);
 }
 

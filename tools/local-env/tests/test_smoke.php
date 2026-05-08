@@ -48,7 +48,7 @@ function test_smoke_phases5_through_8_then_clean() {
     envlite_assert(isset($m['src/wp-content/plugins/sqlite-database-integration']));
 
     // wp-config.php picked up the port.
-    envlite_assert(str_contains(file_get_contents("$dir/src/wp-config.php"), 'http://127.0.0.1:8421'));
+    envlite_assert(strpos(file_get_contents("$dir/src/wp-config.php"), 'http://127.0.0.1:8421') !== false);
 
     // Now drive clean (force, no TTY).
     $paths = envlite_clean_collect($m);

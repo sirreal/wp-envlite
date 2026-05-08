@@ -18,6 +18,6 @@ function test_path_relative_to_root_throws_for_outside() {
         envlite_path_relative_to('/tmp/repo', '/etc/passwd');
         throw new \RuntimeException('expected exception');
     } catch (\InvalidArgumentException $e) {
-        envlite_assert(str_contains($e->getMessage(), 'outside repo root'));
+        envlite_assert(strpos($e->getMessage(), 'outside repo root') !== false);
     }
 }

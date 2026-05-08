@@ -30,7 +30,7 @@ function test_manifest_save_emits_lf_only() {
     envlite_manifest_save($dir, ['router.php' => str_repeat('a', 64)]);
     $bytes = file_get_contents($dir . '/.envlite/manifest');
     envlite_assert(strpos($bytes, "\r") === false, 'manifest must not contain CR');
-    envlite_assert(str_ends_with($bytes, "\n"), 'manifest must end with LF');
+    envlite_assert(substr($bytes, -1) === "\n", 'manifest must end with LF');
 }
 
 function test_manifest_load_skips_blank_and_malformed_lines() {

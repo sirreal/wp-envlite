@@ -17,7 +17,7 @@ function test_phase5_verify_sha_throws_on_mismatch() {
         throw new \RuntimeException('expected exception');
     } catch (\RuntimeException $e) {
         unlink($tmp);
-        envlite_assert(str_contains($e->getMessage(), 'SHA256 mismatch'));
+        envlite_assert(strpos($e->getMessage(), 'SHA256 mismatch') !== false);
     }
 }
 
@@ -34,6 +34,6 @@ function test_phase5_tripwire_throws_when_placeholder_missing() {
         envlite_phase5_assert_placeholder($dir . '/db.copy');
         throw new \RuntimeException('expected exception');
     } catch (\RuntimeException $e) {
-        envlite_assert(str_contains($e->getMessage(), 'placeholder'));
+        envlite_assert(strpos($e->getMessage(), 'placeholder') !== false);
     }
 }
