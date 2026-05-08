@@ -208,6 +208,99 @@ function envlite_prompt_or_abort(
     return true;
 }
 
+const ENVLITE_REPO_MARKERS = [
+    'package.json',
+    'composer.json',
+    'wp-config-sample.php',
+    'wp-tests-config-sample.php',
+    'src/wp-includes',
+    'tests/phpunit/includes/bootstrap.php',
+];
+
+function envlite_phase0_is_wordpress_develop(string $root): bool {
+    foreach (ENVLITE_REPO_MARKERS as $m) {
+        if (!file_exists($root . '/' . $m)) { return false; }
+    }
+    return true;
+}
+
+/** Extracts [major, minor, patch] from any string containing a `\d+\.\d+\.\d+` substring. */
+function envlite_phase0_parse_version(string $output): array {
+    if (!preg_match('/(\d+)\.(\d+)\.(\d+)/', $output, $m)) {
+        throw new \RuntimeException("could not parse version from: " . trim($output));
+    }
+    return [(int)$m[1], (int)$m[2], (int)$m[3]];
+}
+
+function envlite_phase0_version_ge(array $a, array $b): bool {
+    for ($i = 0; $i < 3; $i++) {
+        if ($a[$i] > $b[$i]) { return true; }
+        if ($a[$i] < $b[$i]) { return false; }
+    }
+    return true;
+}
+
+/**
+ * Returns null on missing tool (proc_open failure / nonzero exit / unparseable
+ * output). Returns [major, minor, patch] otherwise. The version flag arg
+ * accommodates `--version` (npm/composer) and `-v` if a future tool prefers it.
+ */
+function envlite_phase0_tool_version(array $cmd): ?array {
+    $proc = @proc_open(
+        $cmd,
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes
+    );
+    if (!is_resource($proc)) { return null; }
+    fclose($pipes[0]);
+    $out = stream_get_contents($pipes[1]);
+    $err = stream_get_contents($pipes[2]);
+    fclose($pipes[1]); fclose($pipes[2]);
+    $exit = proc_close($proc);
+    if ($exit !== 0) { return null; }
+    try {
+        return envlite_phase0_parse_version($out !== '' ? $out : $err);
+    } catch (\Throwable $e) {
+        return null;
+    }
+}
+
+/** Runs all preflight checks. Calls envlite_log and exits 3 on first failure. */
+function envlite_phase0_run(string $repoRoot): void {
+    if (!envlite_phase0_is_wordpress_develop($repoRoot)) {
+        envlite_log(null, "preflight: $repoRoot is not a wordpress-develop checkout");
+        exit(3);
+    }
+    if (PHP_VERSION_ID < 70400) {
+        envlite_log(null, 'preflight: PHP ' . PHP_VERSION . ' is below the 7.4 floor');
+        exit(3);
+    }
+    foreach (['pdo_sqlite', 'sqlite3', 'openssl', 'simplexml', 'zip'] as $ext) {
+        if (!extension_loaded($ext)) {
+            envlite_log(null, "preflight: required PHP extension missing: $ext");
+            exit(3);
+        }
+    }
+    $tools = [
+        ['node',     ['node', '--version'],     [20, 10, 0]],
+        ['npm',      ['npm', '--version'],      [10, 2, 0]],
+        ['composer', ['composer', '--version'], [2, 0, 0]],
+    ];
+    foreach ($tools as [$name, $cmd, $min]) {
+        $ver = envlite_phase0_tool_version($cmd);
+        if ($ver === null) {
+            envlite_log(null, "preflight: $name not found or did not report a version");
+            exit(3);
+        }
+        if (!envlite_phase0_version_ge($ver, $min)) {
+            $vstr = implode('.', $ver);
+            $mstr = implode('.', $min);
+            envlite_log(null, "preflight: $name $vstr is below the $mstr minimum");
+            exit(3);
+        }
+    }
+}
+
 function envlite_main(array $argv): int {
     array_shift($argv); // drop script name
     $force = false;
