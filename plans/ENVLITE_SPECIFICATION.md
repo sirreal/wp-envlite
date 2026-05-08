@@ -202,7 +202,12 @@ function discover_port(repoRoot):
     POOL_SIZE = 800
 
     # Deterministic seed: stable hash of the absolute, canonical path.
-    start = POOL_LOW + (crc32(realpath(repoRoot)) mod POOL_SIZE)
+    # Uses hash('crc32b', ...) — returns an 8-char hex string of the
+    # unsigned 32-bit CRC. Avoids PHP's signed-int crc32() which can
+    # return negatives on 32-bit builds (still common on Windows).
+    digest = hash('crc32b', realpath(repoRoot))     # e.g. "1a2b3c4d"
+    seed   = hexdec(substr(digest, -7))             # low 28 bits, fits int
+    start  = POOL_LOW + (seed mod POOL_SIZE)
 
     for i in 0 .. POOL_SIZE-1:
         candidate = POOL_LOW + ((start - POOL_LOW + i) mod POOL_SIZE)
@@ -225,10 +230,12 @@ function port_is_free(port):
 
 **Notes:**
 
-- `crc32(realpath(...))` is intentional, not cryptographic. It needs to
-  spread checkouts across the 800-port pool roughly uniformly. With ~800
-  candidates the birthday-paradox 50% collision threshold is ~33
-  concurrent checkouts on the same machine, well above realistic use.
+- The CRC32 of the canonical path is intentional, not cryptographic. It
+  needs to spread checkouts across the 800-port pool roughly uniformly.
+  With ~800 candidates the birthday-paradox 50% collision threshold is
+  ~33 concurrent checkouts on the same machine, well above realistic
+  use. Taking the low 28 bits (rather than the full 32) loses no
+  meaningful entropy at this pool size.
 - No blacklist. Round-thousand ports are not meaningfully more contended
   than their neighbors, and a blacklist that ages with the dev-tool
   ecosystem is more bug surface than benefit.
@@ -661,12 +668,16 @@ Files inside:
 | `port` | Cached site port (Phase 1). | A single integer line. |
 | `manifest` | Records every file/directory envlite has written, with the content hash at the time of writing. | One entry per line: `<sha256>  <relative path>`. The hash is sha256 of the **bytes envlite is about to write**, computed before the temp file is renamed into place — never re-read from disk afterwards. `dir` in the hash field denotes a directory entry. |
 
-**Path canonicalization.** Paths in the manifest use POSIX `/`
-separators, are relative to the repo root, and are NFC-normalized
-(macOS APFS otherwise produces inconsistent forms across `init` runs
-when filenames contain composed/decomposed Unicode). Other
-canonicalization details (duplicate handling, which directories get
-`dir` entries) are implementation-defined.
+**Path canonicalization.** Paths in the manifest are stored relative to
+the repo root with `/` (POSIX-style) separators. On Windows,
+`realpath()` returns `\`-separated paths; convert to `/` with
+`str_replace` before writing to or comparing against the manifest. PHP
+accepts `/` on Windows for all file APIs, so a single in-memory
+convention keeps comparisons reliable. envlite does not promise that a
+manifest written on one OS is interpretable on another — within-platform
+consistency is the only contract. Other canonicalization details
+(duplicate handling, which directories get `dir` entries) are
+implementation-defined.
 
 **Manifest immutability.** The manifest is envlite-managed. Hand-editing
 it (reordering lines, rewriting hashes) produces undefined behavior on
