@@ -766,8 +766,80 @@ function envlite_cmd_serve(array $args, bool $force): int {
 }
 
 function envlite_cmd_clean(array $args, bool $force): int {
-    envlite_log('clean', 'not implemented');
-    return 1;
+    if (!empty($args)) {
+        envlite_log('clean', 'unexpected arguments: ' . implode(' ', $args));
+        return 2;
+    }
+    $repoRoot = getcwd();
+    if (!is_dir("$repoRoot/.envlite")) {
+        envlite_log('clean', 'nothing to clean (no .envlite/ directory)');
+        return 0;
+    }
+
+    envlite_observe_ht_sqlite($repoRoot);
+    $manifest = envlite_manifest_load($repoRoot);
+    $paths = envlite_clean_collect($manifest);
+
+    if (empty($paths)) {
+        envlite_log('clean', 'manifest is empty; removing .envlite/ only');
+    } else {
+        // Single batch prompt.
+        if (!$force) {
+            if (!stream_isatty(STDIN)) {
+                envlite_log(null, 'non-interactive context and --force not given; aborting at clean');
+                return 5;
+            }
+            fwrite(STDERR, "envlite clean: will remove " . count($paths) . " path(s):\n");
+            foreach ($paths as $p) { fwrite(STDERR, "  $p\n"); }
+            fwrite(STDERR, "envlite clean: continue? [y/N] ");
+            $line = fgets(STDIN);
+            $resp = $line === false ? '' : strtolower(trim($line));
+            if ($resp !== 'y' && $resp !== 'yes') {
+                envlite_log('clean', 'aborted by user');
+                return 5;
+            }
+        }
+        envlite_clean_apply($repoRoot, $paths);
+    }
+
+    // Remove .envlite/ itself.
+    @unlink("$repoRoot/.envlite/manifest");
+    @unlink("$repoRoot/.envlite/port");
+    @rmdir("$repoRoot/.envlite");
+    return 0;
+}
+
+/** Pure: returns paths in reverse insertion order. */
+function envlite_clean_collect(array $manifest): array {
+    return array_reverse(array_keys($manifest));
+}
+
+/** I/O: deletes each path. Must be called after the prompt has been resolved. */
+function envlite_clean_apply(string $repoRoot, array $paths): void {
+    foreach ($paths as $rel) {
+        $abs = "$repoRoot/$rel";
+        if (!file_exists($abs) && !is_dir($abs)) { continue; }
+        if (is_dir($abs) && !is_link($abs)) {
+            envlite_rrmdir($abs);
+        } else {
+            @unlink($abs);
+        }
+    }
+}
+
+function envlite_rrmdir(string $dir): void {
+    $items = scandir($dir);
+    if ($items === false) { return; }
+    foreach ($items as $item) {
+        if ($item === '.' || $item === '..') { continue; }
+        $path = "$dir/$item";
+        if (is_dir($path) && !is_link($path)) {
+            envlite_rrmdir($path);
+        } else {
+            @unlink($path);
+        }
+    }
+    @rmdir($dir);
 }
 
 if (!defined('ENVLITE_NO_AUTORUN') && isset($_SERVER['SCRIPT_FILENAME'])
