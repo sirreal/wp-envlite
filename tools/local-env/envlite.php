@@ -271,6 +271,54 @@ function envlite_proc_stream(array $cmd, ?string $cwd = null): int {
 }
 
 /**
+ * Builds the argv passed to `php -S`. Excludes the binary itself —
+ * pcntl_exec receives the binary as its first argument and the rest as $args.
+ * On the Windows fallback path, envlite_run_dev_server prepends PHP_BINARY.
+ */
+function envlite_dev_server_argv(string $repoRoot, int $port): array {
+    return ['-S', "127.0.0.1:$port", '-t', 'src', __DIR__ . '/router.php'];
+}
+
+/**
+ * Returns true if pcntl_exec is usable on this platform right now.
+ * Split into a function so tests can read the same predicate the launcher uses.
+ */
+function envlite_pcntl_exec_available(): bool {
+    return PHP_OS_FAMILY !== 'Windows' && function_exists('pcntl_exec');
+}
+
+/**
+ * Launches the dev server. On Unix with pcntl available, replaces the current
+ * process via pcntl_exec — same PID, no parent-child relay. On Windows (or
+ * any environment without pcntl_exec), falls back to envlite_proc_stream
+ * which inherits stdio so SIGINT still reaches the child. Returns only on
+ * error or when the fallback child exits.
+ */
+function envlite_run_dev_server(string $repoRoot, int $port): int {
+    $argv = envlite_dev_server_argv($repoRoot, $port);
+
+    if (envlite_pcntl_exec_available()) {
+        // pcntl_exec uses the *current* working directory; chdir first so
+        // `-t src` resolves relative to the repo root, matching the proc_open
+        // path's $cwd argument.
+        if (!@chdir($repoRoot)) {
+            envlite_log(null, "failed to chdir to $repoRoot before exec");
+            return 1;
+        }
+        // Suppress the warning pcntl_exec emits on failure; we surface our own.
+        @pcntl_exec(PHP_BINARY, $argv);
+        // pcntl_exec returns only on failure (success replaces the process).
+        envlite_log(null, 'pcntl_exec(php -S) failed; the dev server did not start');
+        return 1;
+    }
+
+    // Windows fallback. Use PHP_BINARY explicitly so we don't depend on PATH
+    // resolution to the same PHP that is running envlite.
+    $exit = envlite_proc_stream(array_merge([PHP_BINARY], $argv), $repoRoot);
+    return $exit === 0 ? 0 : 1;
+}
+
+/**
  * Returns null on missing tool (proc_open failure / nonzero exit / unparseable
  * output). Returns [major, minor, patch] otherwise. The version flag arg
  * accommodates `--version` (npm/composer) and `-v` if a future tool prefers it.
