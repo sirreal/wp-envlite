@@ -2,19 +2,23 @@
 const ENVLITE_VERSION = '0.1.0';
 
 function envlite_help_text(): string {
-    return "envlite — wordpress-develop dev environment setup\n"
-         . "\n"
-         . "Usage:\n"
-         . "  php tools/local-env/envlite.php <subcommand> [args]\n"
-         . "\n"
-         . "Subcommands:\n"
-         . "  init [--port=N] [--no-build]   Run all setup phases.\n"
-         . "  serve                          Run the dev server on the cached port.\n"
-         . "  clean                          Remove envlite-managed files.\n"
-         . "  help                           Print this help.\n"
-         . "\n"
-         . "Global flags:\n"
-         . "  --force                        Disable interactive prompts.\n";
+	return
+		<<<'TEXT'
+		envlite — wordpress-develop dev environment setup
+
+		Usage:
+		  php tools/local-env/envlite.php <subcommand> [args]
+
+		Subcommands:
+		  init [--port=N] [--no-build]   Run all setup phases.
+		  serve                          Run the dev server on the cached port.
+		  clean                          Remove envlite-managed files.
+		  help                           Print this help.
+
+		Global flags:
+		  --force                        Disable interactive prompts.
+
+		TEXT;
 }
 
 function envlite_format_log(?string $subcommand, string $message): string {
