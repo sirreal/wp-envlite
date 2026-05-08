@@ -730,8 +730,39 @@ function envlite_observe_ht_sqlite(string $repoRoot): void {
 }
 
 function envlite_cmd_serve(array $args, bool $force): int {
-    envlite_log('serve', 'not implemented');
-    return 1;
+    if (!empty($args)) {
+        envlite_log('serve', 'unexpected arguments: ' . implode(' ', $args));
+        return 2;
+    }
+
+    $repoRoot = getcwd();
+    if (!envlite_phase0_is_wordpress_develop($repoRoot)) {
+        envlite_log('serve', 'not a wordpress-develop checkout');
+        return 3;
+    }
+
+    $cachePath = "$repoRoot/.envlite/port";
+    if (!is_file($cachePath)) {
+        envlite_log('serve', 'no cached port; run `envlite init` first');
+        return 1;
+    }
+    $port = (int) trim(file_get_contents($cachePath));
+    if ($port < 1 || $port > 65535) {
+        envlite_log('serve', "cached port out of range: $port");
+        return 1;
+    }
+
+    if (!envlite_phase1_port_is_free($port)) {
+        envlite_log('serve', "failed to bind 127.0.0.1:$port");
+        return 1;
+    }
+
+    // Stream the dev server. SIGINT propagates to the child via terminal.
+    $exit = envlite_proc_stream(
+        ['php', '-S', "127.0.0.1:$port", '-t', 'src', 'router.php'],
+        $repoRoot
+    );
+    return $exit === 0 ? 0 : 1;
 }
 
 function envlite_cmd_clean(array $args, bool $force): int {
