@@ -63,3 +63,12 @@ function test_phase7_render_treats_salts_as_literal_not_backreferences() {
         'metacharacters in salts must survive verbatim'
     );
 }
+
+function test_phase7_render_normalizes_crlf_in_sample() {
+    // wp-config-sample.php ships CRLF in tree on a normal checkout. The
+    // render path must normalize so the output is LF-only and the recorded
+    // hash is stable across git EOL settings.
+    $sample = file_get_contents(dirname(__DIR__, 3) . '/wp-config-sample.php');
+    $out = envlite_phase7_render($sample, 8421, null);
+    envlite_assert(strpos($out, "\r\n") === false, 'rendered config must be LF-only');
+}

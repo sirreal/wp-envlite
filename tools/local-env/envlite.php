@@ -648,6 +648,14 @@ function envlite_phase6_install(string $repoRoot, bool $force): void {
 const ENVLITE_SALT_URL = 'https://api.wordpress.org/secret-key/1.1/salt/';
 
 function envlite_phase7_render(string $sample, int $port, ?string $saltsBlock): string {
+    // wp-config-sample.php ships with CRLF line endings in tree. envlite
+    // injects LF-only lines (WP_HOME/WP_SITEURL, the salts block); without
+    // normalization the rendered output would be a mix of CRLF and LF, which
+    // makes envlite's recorded hash sensitive to how the user's git client
+    // chose to check out the sample. Normalize once up front so the output
+    // is LF-only and the hash is portable.
+    $sample = str_replace("\r\n", "\n", $sample);
+
     // 1. DB constants — exactly one of each in the sample.
     $dbReplacements = [
         'database_name_here' => 'wordpress',
