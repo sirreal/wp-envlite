@@ -988,7 +988,16 @@ explicit user assent. Users who want a fully clean slate run
    deprecations; that's a per-group fix, not envlite's problem.
 3. **No `composer.lock`, by upstream design.** Every Phase 4 run
    resolves fresh from `composer.json`. envlite does not generate or
-   check in a lock; doing so would diverge from upstream.
+   check in a lock; doing so would diverge from upstream. For the same
+   reason Phase 4 does **not** pass `--platform-php` and does not set
+   `config.platform.php`: the resolver evaluates against runtime PHP,
+   not the 7.4 floor. Pinning to the floor would be a half-measure
+   without a lockfile (Composer still picks "latest compatible" each
+   run) and would penalize devs on newer PHP for no test-contract win
+   — the green-bar contract is `phpunit --group html-api` on the host
+   PHP, which is exactly what runtime-resolved deps target. WP CI also
+   resolves against its matrix PHP, so envlite mirrors CI rather than
+   masking it.
 4. **The SQLite plugin path placeholder is dead.** Documented in Phase 5.
 5. **Two distinct config files.** `wp-tests-config.php` (Phase 6) and
    `src/wp-config.php` (Phase 7) are loaded by different bootstrap paths
