@@ -1,9 +1,9 @@
 # envlite
 
 A zero-daemon local environment for `wordpress-develop`. Runs WordPress
-on SQLite via PHP's built-in server. No MySQL, no Docker, no MAMP.
-Unrelated to the `npm run env:*` Docker stack that shares this
-directory.
+on SQLite via PHP's built-in server, and gets
+`./vendor/bin/phpunit --group html-api` running green. No MySQL, no
+Docker, no MAMP.
 
 ## Quickstart
 
@@ -14,23 +14,27 @@ php tools/local-env/envlite.php up
 ```
 
 That sets up the environment and starts the dev server in the
-foreground. Open the URL it prints; log in at `/wp-login.php` with
-`admin` / `password`. Ctrl-C shuts it down.
+foreground at `http://127.0.0.1:<port>`, where `<port>` is auto-picked
+from 8100–8899 on first run and cached at `.envlite/port` for reuse.
+Open the URL it prints; log in at `/wp-login.php` with `admin` /
+`password`. Ctrl-C shuts it down.
 
-The first run needs network access. Subsequent runs are offline. Re-run
-`up` any time — envlite **never drops tables**, so your local content
-survives.
+The first run needs network access (npm + Composer deps, plus a
+pinned SQLite drop-in plugin). Subsequent runs are offline.
+
+Re-runs are safe. envlite skips work that's already done, prompts
+before touching anything you've changed, and **never drops tables** —
+your local content survives.
 
 ## Requirements
 
 - PHP ≥ 7.4 with `pdo_sqlite`, `sqlite3`, `openssl`, `simplexml`, `zip`.
-  Unix also requires `pcntl`.
+  On Unix only, also `pcntl`.
 - Node ≥ 20.10, npm ≥ 10.2.3.
 - Composer ≥ 2.
 
-Ubuntu/Debian extensions are usually split out:
-`apt install php-sqlite3 php-xml php-zip`. Homebrew's `php` bundles
-them.
+envlite checks these at startup and aborts with a clear error if
+anything is missing.
 
 ## Other commands
 
@@ -40,12 +44,19 @@ php tools/local-env/envlite.php serve    # server only (after init)
 php tools/local-env/envlite.php clean    # remove envlite-created files
 ```
 
-`init` and `up` accept `--port=N` (1–65535) and `--no-build` (skip
-`npm run build:dev`). The chosen port is cached and reused. Pass
-`--force` to skip prompts in non-interactive contexts.
+`init` and `up` accept:
+- `--port=N` — pick a specific port (1–65535) and cache it.
+- `--no-build` — skip `npm run build:dev`. Don't use this on a fresh
+  checkout; phpunit will fail with `ABSPATH constant ... non-existent path`.
+- `--force` — skip prompts (envlite prompts before overwriting files
+  you've modified). Required for non-interactive contexts.
 
-`./vendor/bin/phpunit --group html-api` runs the green-bar test contract
-(~5 s, ~1365 tests). Other groups may surface deprecations on newer PHP.
+`clean` removes envlite's config files (`src/wp-config.php`,
+`wp-tests-config.php`, `src/wp-content/db.php`), the bundled SQLite
+plugin directory, the cached port, and — on a single confirmation
+prompt — the live SQLite DB at `src/wp-content/database/.ht.sqlite`.
+It does not touch `node_modules/`, `vendor/`, or build artifacts under
+`src/`. For those, use `git clean -fdx`.
 
 ## Use `127.0.0.1`, not `localhost`
 
@@ -58,10 +69,9 @@ macOS/Linux, so a browser hitting `http://localhost:<port>/` can get
 | Symptom | Fix |
 |---|---|
 | `not in a wordpress-develop checkout` | `cd` to the repo root. |
-| `extension X not loaded` | Install it. Ubuntu/Debian: `apt install php-sqlite3 php-xml php-zip`. |
+| `extension X not loaded` | Install it. Ubuntu/Debian: `apt install php-sqlite3 php-xml php-zip`. Homebrew's `php` already bundles them. |
 | `<tool> below minimum` | Upgrade node/npm/composer. |
-| `SHA256 mismatch on plugin zip` | Retry once; if persistent, the pinned SQLite drop-in needs an update — file an issue. |
+| `SHA256 mismatch on plugin zip` | Retry once. If persistent, the pinned SQLite drop-in needs a deliberate update — file an issue. |
 | `failed to bind 127.0.0.1:<port>` | Another process holds the port. `lsof -nP -iTCP:<port> -sTCP:LISTEN`; kill the holder, or `init --port=N` to relocate. |
-| Browser hangs / `ECONNREFUSED` on `localhost` | Use `http://127.0.0.1:<port>/`. |
-| phpunit `ABSPATH constant ... non-existent path` | You ran with `--no-build` on a fresh checkout. Re-run without it. |
+| phpunit fails with deprecation-as-exception in a non-`html-api` group | Only `--group html-api` is the green-bar contract. Other groups may surface deprecations on newer PHP — per-group fix, not envlite's. |
 | Corrupt-DB error after an interrupted run | Delete `src/wp-content/database/.ht.sqlite` and re-run. |
