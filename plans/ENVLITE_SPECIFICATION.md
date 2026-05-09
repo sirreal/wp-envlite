@@ -266,8 +266,10 @@ invocations so that bookmarks/links don't rot.
 
 **Constraints on the port:**
 
-- Must be in the IANA user/registered range, away from the OS's
-  ephemeral allocation pool. Pool: **8100–8899**.
+- Auto-discovered ports come from a fixed pool: **8100–8899**, in the
+  IANA user/registered range and away from the OS's ephemeral
+  allocation pool. The pool only governs auto-discovery; an explicit
+  `--port=N` accepts any 1–65535 (the user owns the choice).
 - Must not be currently bound by another process **at first
   discovery**. Once cached, envlite trusts the cache and does not
   re-probe (the user may have envlite's own server running on it).
@@ -285,9 +287,9 @@ function discover_port(repoRoot):
     cacheFile = repoRoot + "/.envlite/port"
     if file_exists(cacheFile):
         cached = (int) trim(read(cacheFile))
-        if 8100 <= cached <= 8899:
+        if 1 <= cached <= 65535:
             return cached            # trust the cache; do not re-probe
-        # else: cache out of range, fall through to re-pick
+        # else: cache corrupt / out of any sane range, fall through to re-pick
 
     POOL_LOW  = 8100
     POOL_SIZE = 800
@@ -342,8 +344,10 @@ function port_is_free(port):
   envlite calls `port_is_free(N)`; if N is currently bound, abort with
   exit 1 and a one-line message naming the port and suggesting
   `lsof -nP -iTCP:N -sTCP:LISTEN` to identify the occupant. Only on a
-  successful probe does N get written to the cache. The user is then
-  expected to pass a different `--port` if they really want one.
+  successful probe does N get written to the cache. N may be any
+  1–65535 — the auto-discovery pool is not enforced on explicit ports,
+  so familiar choices like `8080` or `3000` are honored. The user is
+  then expected to pass a different `--port` if they really want one.
 - There is no `serve --port=N`; the cache is the source of truth. To
   pick a different port, either run `init --port=N` or delete
   `.envlite/port` and re-run.
@@ -951,7 +955,7 @@ Phase-specific notes:
 | Phase | Re-run behavior |
 |---|---|
 | 0 (preflight) | Always runs. |
-| 1 (port) | Re-uses the cached port if the cache exists and is in `[8100, 8899]`. Otherwise re-discovers. |
+| 1 (port) | Re-uses the cached port if the cache exists and is in `[1, 65535]`. Otherwise re-discovers from the 8100–8899 pool. |
 | 2 (npm ci) | Always spawns `npm ci`; npm decides whether work is needed. |
 | 3 (build:dev) | Always spawns `build:dev` unless `--no-build`. |
 | 4 (composer install) | Always spawns `composer install`; the operation is idempotent. |

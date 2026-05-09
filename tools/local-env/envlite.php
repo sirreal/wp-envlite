@@ -418,10 +418,10 @@ function envlite_phase1_discover_port(string $repoRoot, ?int $explicitPort): int
 
     if (is_file($cachePath)) {
         $cached = (int) trim(file_get_contents($cachePath));
-        if ($cached >= ENVLITE_PORT_LOW && $cached <= ENVLITE_PORT_LOW + ENVLITE_PORT_POOL_SIZE - 1) {
+        if ($cached >= 1 && $cached <= 65535) {
             return $cached;
         }
-        // out of range: fall through to re-pick
+        // cache corrupt / out of any sane range: fall through to re-pick
     }
 
     $start = envlite_phase1_seed_port(realpath($repoRoot) ?: $repoRoot);
