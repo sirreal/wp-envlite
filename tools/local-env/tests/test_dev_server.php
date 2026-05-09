@@ -22,8 +22,9 @@ function test_dev_server_argv_does_not_include_php_binary_first() {
 
 function test_dev_server_pcntl_replaces_process_on_unix() {
     if (!envlite_pcntl_exec_available()) {
-        // Windows or pcntl-less Unix: the helper takes the proc_open branch.
-        // Verified separately in test_dev_server_fallback_uses_proc_open.
+        // Windows or pcntl-less Unix: skip the pcntl_exec replacement check.
+        // proc_stream behavior is covered by
+        // test_dev_server_proc_stream_propagates_child_exit_with_dev_server_argv_shape.
         return;
     }
 
@@ -45,10 +46,10 @@ PHP;
     envlite_assert_eq(7, $exit, 'pcntl_exec must replace process; child exit must be 7');
 }
 
-function test_dev_server_fallback_uses_proc_open_when_pcntl_unavailable() {
-    // We can't disable pcntl in-process. Instead, exercise envlite_proc_stream
-    // directly with the same argv shape envlite_run_dev_server constructs for
-    // the Windows fallback, and assert it returns the child's exit code.
+function test_dev_server_proc_stream_propagates_child_exit_with_dev_server_argv_shape() {
+    // pcntl can't be disabled in-process to test the actual fallback selection.
+    // Instead, verify that envlite_proc_stream propagates the child exit code
+    // when called with the argv shape envlite_run_dev_server uses on Windows.
     $argv = array_merge([PHP_BINARY], ['-r', 'exit(0);']);
     $exit = envlite_proc_stream($argv);
     envlite_assert_eq(0, $exit, 'proc_open fallback must propagate child exit code');

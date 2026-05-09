@@ -288,16 +288,23 @@ function envlite_pcntl_exec_available(): bool {
 }
 
 /**
- * Launches the dev server. On Unix with pcntl available, replaces the current
- * process via pcntl_exec — same PID, no parent-child relay. On Windows (or
- * any environment without pcntl_exec), falls back to envlite_proc_stream
- * which inherits stdio so SIGINT still reaches the child. Returns only on
- * error or when the fallback child exits.
+ * Launches the dev server. On Unix, requires pcntl (enforced by Phase 0 at
+ * init time and re-checked here for safety) and replaces the current process
+ * via pcntl_exec — same PID, no parent-child relay. On Windows, falls back
+ * to envlite_proc_stream which inherits stdio so SIGINT still reaches the
+ * child. Returns only on error or when the Windows-fallback child exits.
  */
 function envlite_run_dev_server(string $repoRoot, int $port): int {
     $argv = envlite_dev_server_argv($repoRoot, $port);
 
-    if (envlite_pcntl_exec_available()) {
+    if (PHP_OS_FAMILY !== 'Windows') {
+        if (!function_exists('pcntl_exec')) {
+            // Phase 0 enforces pcntl on Unix, but `serve` skips Phase 0 — so a
+            // checkout cached from a different system could land here. The spec
+            // says Unix uses pcntl_exec; do not silently degrade to proc_open.
+            envlite_log(null, 'pcntl extension is required on Unix; reinstall PHP with pcntl');
+            return 1;
+        }
         // pcntl_exec uses the *current* working directory; chdir first so
         // `-t src` resolves relative to the repo root, matching the proc_open
         // path's $cwd argument.
