@@ -913,11 +913,10 @@ function envlite_cmd_up(array $args, bool $force): int {
     }
 
     fwrite(STDERR, "envlite up: serving http://127.0.0.1:$resolvedPort/ (admin / password)\n");
-    $exit = envlite_proc_stream(
-        ['php', '-S', "127.0.0.1:$resolvedPort", '-t', 'src', __DIR__ . '/router.php'],
-        $repoRoot
-    );
-    return $exit === 0 ? 0 : 1;
+    // Hand off to the dev-server launcher. pcntl on Unix means this function
+    // never returns on success; the "serving …" line above is the last thing
+    // envlite itself prints.
+    return envlite_run_dev_server($repoRoot, $resolvedPort);
 }
 
 function envlite_phase_guard(string $sub, int $n, callable $fn): int {
