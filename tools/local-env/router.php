@@ -9,7 +9,17 @@ if (preg_match('#(^|/)\.ht#', $path)) {
 }
 
 $file = dirname(__DIR__, 2) . '/src' . $path;
-if ($path !== '/' && file_exists($file) && !is_dir($file)) {
-    return false;
+
+if ($path !== '/' && file_exists($file)) {
+    if (!is_dir($file)) {
+        return false;
+    }
+    // Existing directory: let the built-in server serve its index.php
+    // (e.g. /wp-admin/ -> wp-admin/index.php). Without an index, fall
+    // through to the front controller to avoid directory listings.
+    if (file_exists(rtrim($file, '/') . '/index.php')) {
+        return false;
+    }
 }
+
 require dirname(__DIR__, 2) . '/src/index.php';
