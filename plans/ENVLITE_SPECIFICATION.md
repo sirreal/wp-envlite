@@ -548,8 +548,16 @@ sample), and write the result to `wp-tests-config.php`:
 (Use `str_replace` or `strtr` over the file contents; do not invoke any
 external command.) After the write, assert that each of the three
 placeholders is no longer present in the output (catches an upstream
-sample reshape). DB_HOST is left as the sample's `localhost` — the
-SQLite drop-in ignores it, but `wpdb` still requires it to be defined.
+sample reshape). Then assert that the substituted bytes do not already
+contain a `DB_FILE` define (regex: `define\s*\(\s*['\"]DB_FILE['\"]`); a
+match means upstream's `wp-tests-config-sample.php` has grown its own
+`DB_FILE` and envlite's append assumption no longer holds — abort with
+`envlite init: phase 6: DB_FILE already defined in wp-tests-config-sample.php; envlite assumption broken`.
+Finally, ensure the bytes end in `\n` (append one if not) and append the
+literal line `define( 'DB_FILE', '.ht.test.sqlite' );\n`. Write the
+result to `wp-tests-config.php`. DB_HOST is left as the sample's
+`localhost` — the SQLite drop-in ignores it, but `wpdb` still requires
+it to be defined.
 
 **Inputs:** `wp-tests-config-sample.php`.
 **Outputs:** `wp-tests-config.php` at the repo root.
@@ -565,6 +573,16 @@ SQLite drop-in ignores it, but `wpdb` still requires it to be defined.
   in Phase 7 because that file *is* used by an HTTP runtime.)
 - ABSPATH in the sample resolves to `dirname(__FILE__) . '/src/'`, which
   is correct for envlite's layout.
+- The appended `DB_FILE` define isolates the phpunit test DB at
+  `src/wp-content/database/.ht.test.sqlite` from the live runtime
+  DB at `src/wp-content/database/.ht.sqlite`. The phpunit
+  bootstrap's `tests/phpunit/includes/install.php` drops every WP
+  table on every run; sharing the drop-in's default `FQDB` between
+  the two configs would silently wipe the dev site Phase 8
+  installs, contradicting Phase 8's "envlite never drops tables"
+  invariant via phpunit's bootstrap. `src/wp-config.php` (Phase 7)
+  remains free of any `DB_FILE` define so the live runtime keeps
+  the drop-in's default `FQDB`.
 
 **Idempotency:** anchored on the manifest.
 
@@ -860,6 +878,7 @@ src/wp-content/database/.ht.sqlite                       (populated by Phase 8; 
 node_modules/                                            (Phase 2 — `npm ci`)
 vendor/                                                  (Phase 4 — `composer install`)
 src/wp-includes/version.php and other build outputs      (Phase 3 — `npm run build:dev`)
+src/wp-content/database/.ht.test.sqlite                  (created on first phpunit run; not envlite-managed)
 ```
 
 `.ht.sqlite` is created by the SQLite drop-in the first time
@@ -1026,6 +1045,20 @@ explicit user assent. Users who want a fully clean slate run
     login. `localhost` would also depend on `/etc/hosts` and the
     system resolver; `127.0.0.1` is a literal address with no
     surprises.
+14. **Test DB is isolated via `DB_FILE` in the test config only.**
+    phpunit's `tests/phpunit/includes/install.php` drops every WP
+    table on every run; without isolation it would wipe the dev
+    site Phase 8 installs. The split is one `define( 'DB_FILE',
+    '.ht.test.sqlite' )` appended to `wp-tests-config.php`;
+    `src/wp-config.php` stays untouched and the live runtime keeps
+    the drop-in's default `FQDB`. Same-directory + filename suffix
+    beats a separate `database-test/` (no path-resolution surprises
+    in the drop-in's `FQDBDIR` machinery) and beats putting it
+    under `.envlite/` (preserves envlite's own-state-only convention
+    for that directory). The test DB is not observation-tracked
+    because the rationale for tracking the live DB — possible
+    user-authored content — does not apply to a file phpunit drops
+    every run.
 
 ---
 
