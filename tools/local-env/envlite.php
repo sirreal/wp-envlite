@@ -599,6 +599,10 @@ function envlite_phase6_render(string $sample): string {
             "phase 6: DB_FILE already defined in wp-tests-config-sample.php; envlite assumption broken"
         );
     }
+    if (substr($out, -1) !== "\n") {
+        $out .= "\n";
+    }
+    $out .= "define( 'DB_FILE', '.ht.test.sqlite' );\n";
     return $out;
 }
 
