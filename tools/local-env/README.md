@@ -1,9 +1,8 @@
 # envlite
 
 A zero-daemon local environment for `wordpress-develop`. Runs WordPress
-on SQLite via PHP's built-in server, and gets
-`./vendor/bin/phpunit --group html-api` running green. No MySQL, no
-Docker, no MAMP.
+on SQLite via PHP's built-in server, with phpunit pointed at the same
+SQLite database. No MySQL, no Docker, no MAMP.
 
 ## Quickstart
 
@@ -73,5 +72,5 @@ macOS/Linux, so a browser hitting `http://localhost:<port>/` can get
 | `<tool> below minimum` | Upgrade node/npm/composer. |
 | `SHA256 mismatch on plugin zip` | Retry once. If persistent, the pinned SQLite drop-in needs a deliberate update — file an issue. |
 | `failed to bind 127.0.0.1:<port>` | Another process holds the port. `lsof -nP -iTCP:<port> -sTCP:LISTEN`; kill the holder, or `init --port=N` to relocate. |
-| phpunit fails with deprecation-as-exception in a non-`html-api` group | Only `--group html-api` is the green-bar contract. Other groups may surface deprecations on newer PHP — per-group fix, not envlite's. |
+| phpunit fails with deprecation-as-exception | wordpress-develop sets `convertDeprecationsToExceptions=true`; newer PHP may surface deprecations from core code as exceptions. Per-group fix, not envlite's. |
 | Corrupt-DB error after an interrupted run | Delete `src/wp-content/database/.ht.sqlite` and re-run. |

@@ -2,9 +2,9 @@
 
 **Goal:** Take a clean checkout of `WordPress/wordpress-develop` and bring it
 to a state where (1) PHP's built-in server can serve a working WordPress
-site against a SQLite database, and (2)
-`./vendor/bin/phpunit --group html-api` runs green on host PHP — without
-starting any global services (no system MySQL, no Docker, no MAMP).
+site against a SQLite database, and (2) `./vendor/bin/phpunit` runs against
+that SQLite database on host PHP — without starting any global services (no
+system MySQL, no Docker, no MAMP).
 
 **Non-goals:** worktree creation, background process management, HTTPS,
 production-shaped stacks. envlite operates on whatever directory it is
@@ -100,19 +100,19 @@ shorthand for the full command line.
 envlite has no `verify` subcommand. `phpunit` is a multi-second
 operation users will run anyway during normal development; wrapping it
 in envlite would just charge that cost on every invocation without
-adding signal. After `init`, run whichever of these you actually
-care about:
+adding signal. After `init`, two quick checks confirm the env is wired
+up:
 
 ```sh
-./vendor/bin/phpunit --group html-api      # ~5 s, ~1365 tests
+./vendor/bin/phpunit
 envlite serve  &  curl -sI http://127.0.0.1:$(cat .envlite/port)/
 ```
 
-A green phpunit + a 2xx HTTP status (not a 3xx redirect to
-`/wp-admin/install.php`) proves the same thing the old `verify` did,
-with less ceremony. Phase 8 has already run `wp_install()`, so the
-site responds with the homepage on first hit. Log in at
-`/wp-login.php` with `admin` / `password`.
+Phpunit booting against the SQLite drop-in + a 2xx HTTP status (not a
+3xx redirect to `/wp-admin/install.php`) proves the same thing the old
+`verify` did, with less ceremony. Phase 8 has already run
+`wp_install()`, so the site responds with the homepage on first hit.
+Log in at `/wp-login.php` with `admin` / `password`.
 
 ### Exit codes
 
@@ -983,9 +983,9 @@ explicit user assent. Users who want a fully clean slate run
    WordPress core's own supported floor at the time of writing.
 2. **PHP 8.5 + `convertDeprecationsToExceptions=true`.** wordpress-
    develop's `phpunit.xml.dist` opts every deprecation into a thrown
-   exception. The `--group html-api` subset still passes clean on PHP
-   8.5.5 against the SQLite drop-in. Other groups may surface
-   deprecations; that's a per-group fix, not envlite's problem.
+   exception. On newer PHP some test groups will fail purely on
+   surfaced deprecations from core code; that's a per-group fix, not
+   envlite's problem.
 3. **No `composer.lock`, by upstream design.** Every Phase 4 run
    resolves fresh from `composer.json`. envlite does not generate or
    check in a lock; doing so would diverge from upstream. For the same
@@ -993,11 +993,10 @@ explicit user assent. Users who want a fully clean slate run
    `config.platform.php`: the resolver evaluates against runtime PHP,
    not the 7.4 floor. Pinning to the floor would be a half-measure
    without a lockfile (Composer still picks "latest compatible" each
-   run) and would penalize devs on newer PHP for no test-contract win
-   — the green-bar contract is `phpunit --group html-api` on the host
-   PHP, which is exactly what runtime-resolved deps target. WP CI also
-   resolves against its matrix PHP, so envlite mirrors CI rather than
-   masking it.
+   run) and would penalize devs on newer PHP for no benefit — phpunit
+   runs against host PHP, which is exactly what runtime-resolved deps
+   target. WP CI also resolves against its matrix PHP, so envlite
+   mirrors CI rather than masking it.
 4. **The SQLite plugin path placeholder is dead.** Documented in Phase 5.
 5. **Two distinct config files.** `wp-tests-config.php` (Phase 6) and
    `src/wp-config.php` (Phase 7) are loaded by different bootstrap paths
