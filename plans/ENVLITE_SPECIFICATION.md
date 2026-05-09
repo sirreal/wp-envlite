@@ -809,30 +809,17 @@ parts survive a clean+init cycle.)
 **Atomic writes.** Every file envlite writes — whether content
 (`wp-config.php`, `wp-tests-config.php`, etc.) or the manifest itself — uses the
 write-temp + fsync + rename pattern: hash the in-memory bytes
-(`hash('sha256', $bytes)`), write them to a sibling `.tmp` path, fsync,
-`rename()` over the final path. The manifest entry update uses the
-already-computed hash and happens after the content rename, also
-atomic-replace. envlite **never** calls `hash_file()` on the renamed
-target to populate the manifest — that would race with any subsequent
-writer. A SIGINT mid-operation leaves either fully-pre-write or
-fully-post-write state on disk; no half-written file claims a hash for
-content that wasn't durable.
-
-**File-write conventions.** All envlite-authored text files
-(`src/wp-config.php`, `wp-tests-config.php`, `src/wp-content/db.php`,
-`.envlite/port`, `.envlite/manifest`) are written as raw bytes with:
-
-- LF (`\n`) line endings only — never CRLF, even on Windows. Hard-code
-  `"\n"` in source; never use `PHP_EOL` for envlite-authored content.
-- No UTF-8 BOM.
-- A single trailing newline.
-
-Use `file_put_contents()` (which writes raw bytes by default) on the
-`.tmp` path. Never open a stream in PHP's text mode (`'t'` flag);
-binary mode is the default and the only correct mode here. This keeps
-content hashes byte-identical across platforms, so a re-run or a
-checkout opened on a different OS does not see spurious manifest
-drift.
+(`hash('sha256', $bytes)`), write them to a sibling `.tmp` path in
+binary mode (`'wb'` or `file_put_contents()`; never PHP's text mode
+`'t'`, which translates `\n` to `\r\n` on Windows and would make the
+on-disk bytes diverge from the hash), fsync, `rename()` over the final
+path. The manifest entry update uses the already-computed hash and
+happens after the content rename, also atomic-replace. envlite
+**never** calls `hash_file()` on the renamed target to populate the
+manifest — that would race with any subsequent writer. A SIGINT
+mid-operation leaves either fully-pre-write or fully-post-write state
+on disk; no half-written file claims a hash for content that wasn't
+durable.
 
 **Ownership decisions** (consulted by Phases 5–7):
 
