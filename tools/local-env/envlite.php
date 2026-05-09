@@ -977,12 +977,10 @@ function envlite_cmd_serve(array $args, bool $force): int {
         return 1;
     }
 
-    // Stream the dev server. SIGINT propagates to the child via terminal.
-    $exit = envlite_proc_stream(
-        ['php', '-S', "127.0.0.1:$port", '-t', 'src', __DIR__ . '/router.php'],
-        $repoRoot
-    );
-    return $exit === 0 ? 0 : 1;
+    // Hand off to the dev-server launcher. On Unix this calls pcntl_exec and
+    // never returns; on Windows it streams through proc_open and returns the
+    // exit code.
+    return envlite_run_dev_server($repoRoot, $port);
 }
 
 function envlite_cmd_clean(array $args, bool $force): int {
