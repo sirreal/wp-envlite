@@ -16,8 +16,10 @@ charter.
 
 - host PHP ≥ 7.4 (matching WordPress's own supported floor), with
   `pdo_sqlite`, `sqlite3`, `openssl`, `simplexml`, `zip`, and `hash`
-  extensions loaded. Phase 0 verifies the full set; the brief here
-  just names the unavoidable ones.
+  extensions loaded. On Unix, `pcntl` is also required so
+  `envlite serve` / `envlite up` can call `pcntl_exec` into `php -S`.
+  Phase 0 verifies the full set; the brief here just names the
+  unavoidable ones.
 - host `node` ≥ 20.10, `npm` ≥ 10.2.3 (matching `package.json` `engines`).
 - host `composer` ≥ 2.
 - the SQLite Database Integration plugin from wordpress.org, pinned by
@@ -30,8 +32,11 @@ through PHP's standard library (`file_get_contents` with stream context,
 `hash_file`, `ZipArchive`, `preg_replace`, `str_replace`, `proc_open`).
 Subprocesses spawned by envlite are limited to `node`/`npm`/`composer`,
 plus the host `php` itself in two places: launching the dev server
-(`envlite serve`) and running the Phase 8 site install (script piped
-to the subprocess via stdin).
+(`envlite serve` / `envlite up`) and running the Phase 8 site install
+(script piped to the subprocess via stdin). On Unix, the dev-server
+launch is a `pcntl_exec` (process replacement) rather than a proper
+subprocess; on Windows it is a `proc_open` because `pcntl` is
+unavailable.
 
 ---
 
@@ -83,10 +88,10 @@ shorthand for the full command line.
 - `up [--port=N] [--no-build]`
   - Same flag semantics as `init`. After all phases succeed, `up`
     re-probes the resolved port and runs `php -S` in the foreground —
-    the same invocation `serve` uses. The currently shipped form spawns
-    `php -S` as a child process via `proc_open` (matching `serve`); a
-    follow-up will switch to `pcntl_exec` so the envlite process is
-    replaced in place.
+    the same invocation `serve` uses. On Unix, the launch is a
+    `pcntl_exec(PHP_BINARY, …)` so the envlite process is replaced in
+    place by `php -S`; on Windows, `proc_open` is used because `pcntl`
+    is unavailable. See "`envlite serve` runtime" below for details.
 - `serve` (no flags; the cached port is the source of truth)
 - `clean` (no flags)
 
@@ -141,13 +146,27 @@ single-line messages an aggregator can grep.
 
 ### `envlite serve` runtime
 
-`serve` reads the port from `.envlite/port` and `proc_open`s
+`serve` reads the port from `.envlite/port` and launches
 `php -S 127.0.0.1:<port> -t src tools/local-env/router.php` in the
-foreground. The router is committed at `tools/local-env/router.php`
-alongside `envlite.php`; it is not installed into the repo, the
-manifest does not track it, and `clean` does not remove it. It has
-no inputs (the port is a `php -S` argument, not baked into the file)
-and no user-tunable knobs.
+foreground.
+
+On Unix, the launch uses `pcntl_exec(PHP_BINARY, …)`: the envlite PHP
+process is replaced in place by `php -S`, so there is no parent-child
+relay, the PID stays the same, and signals (notably SIGINT from
+Ctrl-C) reach `php -S` directly. The `envlite up` subcommand uses the
+same launch path after its init phases finish.
+
+On Windows, `pcntl` is unavailable. `serve` falls back to `proc_open`
+with stdio inherited from envlite's own STDIN/STDOUT/STDERR. Behavior
+is functionally equivalent for the user — foreground server, Ctrl-C
+shuts it down — but the process tree shows envlite as the parent of
+`php -S`.
+
+The router is committed at `tools/local-env/router.php` alongside
+`envlite.php`; it is not installed into the repo, the manifest does
+not track it, and `clean` does not remove it. It has no inputs (the
+port is a `php -S` argument, not baked into the file) and no
+user-tunable knobs.
 
 The router resolves the repo's `src/` via
 `dirname(__DIR__, 2) . '/src'`, returns `false` for files that exist
@@ -162,7 +181,11 @@ at `init` time.
 bound (another `envlite serve` running, or any other process on
 `<port>`), envlite exits 1 with a single stderr line:
 `envlite serve: failed to bind 127.0.0.1:<port>`. No manifest
-mutation occurs.
+mutation occurs. Note that on Unix the envlite process has already
+been replaced by the time `php -S` reports the bind failure, so the
+exit code surfaced to the shell is `php -S`'s, not envlite's;
+envlite's pre-flight `port_is_free` probe (in both `serve` and `up`)
+is the path that emits the named log line above.
 
 ---
 
@@ -204,6 +227,11 @@ assumptions. Cheap to run and informative on failure.
      would still appear to succeed but `vendor/bin/phpstan` and PHPCS
      ruleset loading would fail at runtime.
    - `zip` — required by `ZipArchive` for Phase 5.
+   - `pcntl` (Unix only) — required so `envlite serve` and
+     `envlite up` can call `pcntl_exec(PHP_BINARY, …)` into the dev
+     server, replacing envlite's PHP process in place. The check is
+     gated on `PHP_OS_FAMILY !== 'Windows'`; Windows PHP has no
+     `pcntl` and uses a `proc_open` fallback.
 
    `hash` is non-disable-able since PHP 7.4 and is not checked.
 4. `node`, `npm`, and `composer` are present and meet minimum versions:
@@ -967,7 +995,11 @@ explicit user assent. Users who want a fully clean slate run
    and zip extraction go through PHP standard library. Subprocesses
    are limited to `node`/`npm`/`composer`/`php` — tools envlite already
    requires for setup. No `sed`/`awk`/`curl`/`unzip`/`shasum`/`python`
-   dependencies, even when those are commonly present.
+   dependencies, even when those are commonly present. The dev-server
+   launch on Unix uses `pcntl_exec` rather than `proc_open` so the
+   envlite PHP process is replaced in place by `php -S` (same PID,
+   shallower process tree, direct signal delivery); Windows lacks
+   `pcntl` and falls back to `proc_open` with inherited stdio.
 9. **Manifest, not file presence, is the ownership signal.** Earlier
    drafts gated idempotency on "does the file exist". That conflated
    "envlite created it" with "anyone created it" and made `clean` a
