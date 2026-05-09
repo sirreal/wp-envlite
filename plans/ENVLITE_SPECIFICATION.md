@@ -34,7 +34,7 @@ Subprocesses spawned by envlite are limited to `node`/`npm`/`composer`,
 plus the host `php` itself in two places: launching the dev server
 (`envlite serve` / `envlite up`) and running the Phase 8 site install
 (script piped to the subprocess via stdin). On Unix, the dev-server
-launch is a `pcntl_exec` (process replacement) rather than a proper
+launch uses `pcntl_exec` (process replacement) rather than a proper
 subprocess; on Windows it is a `proc_open` because `pcntl` is
 unavailable.
 
@@ -88,7 +88,7 @@ shorthand for the full command line.
 - `up [--port=N] [--no-build]`
   - Same flag semantics as `init`. After all phases succeed, `up`
     re-probes the resolved port and runs `php -S` in the foreground —
-    the same invocation `serve` uses. On Unix, the launch is a
+    the same invocation `serve` uses. On Unix, the launch uses
     `pcntl_exec(PHP_BINARY, …)` so the envlite process is replaced in
     place by `php -S`; on Windows, `proc_open` is used because `pcntl`
     is unavailable. See "`envlite serve` runtime" below for details.
@@ -177,15 +177,14 @@ wp-load.php → wp-settings.php chain handles the rest, including
 once installed. The port is consumed only when `serve` runs, never
 at `init` time.
 
-**Bind failure.** If `php -S` exits because the port is already
-bound (another `envlite serve` running, or any other process on
-`<port>`), envlite exits 1 with a single stderr line:
-`envlite serve: failed to bind 127.0.0.1:<port>`. No manifest
-mutation occurs. Note that on Unix the envlite process has already
-been replaced by the time `php -S` reports the bind failure, so the
-exit code surfaced to the shell is `php -S`'s, not envlite's;
-envlite's pre-flight `port_is_free` probe (in both `serve` and `up`)
-is the path that emits the named log line above.
+**Bind failure.** envlite's pre-flight `port_is_free` probe (in both
+`serve` and `up`) detects an already-bound port and exits 1 with a
+single stderr line: `envlite serve: failed to bind 127.0.0.1:<port>`.
+No manifest mutation occurs. If the port becomes bound in the race
+window between the probe and the launch, the Unix path's envlite
+process has already been replaced by the time `php -S` reports the
+failure, so the exit code surfaced to the shell is `php -S`'s, not
+envlite's.
 
 ---
 
