@@ -775,11 +775,11 @@ forcing.
 
 ### envlite state directory (`.envlite/`)
 
-`.envlite/` at the repo root holds envlite's private state. envlite does
-**not** modify `.gitignore`, `.git/info/exclude`, or any other git
-configuration. Adding `.envlite/` to wordpress-develop's `.gitignore` is
-an upstream concern; in the meantime users can git-ignore the directory
-locally with `echo '/.envlite/' >> .git/info/exclude` themselves.
+`.envlite/` at the repo root holds envlite's private state.
+wordpress-develop's `.gitignore` lists `/.envlite/`, so envlite's state
+files are ignored out of the box. envlite itself does **not** modify
+`.gitignore`, `.git/info/exclude`, or any other git configuration at
+runtime — the entry is committed to the repo, not written by the tool.
 
 Files inside:
 
