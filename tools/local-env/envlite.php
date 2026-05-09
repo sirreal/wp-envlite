@@ -662,13 +662,22 @@ function envlite_phase7_render(string $sample, int $port, ?string $saltsBlock): 
     $cfg = strtr($sample, $dbReplacements);
 
     // 2. Salt block: AUTH_KEY through NONCE_SALT, 8 contiguous define()s.
+    // The salts API returns random bytes that can include `$` and `\`; using
+    // them as preg_replace's replacement argument would let sequences like
+    // `$1` or `\1` be interpreted as backreferences and silently corrupt the
+    // saved salts. Use a callback so the block is inserted as a literal.
     if ($saltsBlock !== null) {
         $pattern = '/define\(\s*\'AUTH_KEY\'.*?define\(\s*\'NONCE_SALT\'\s*,\s*\'[^\']*\'\s*\);/s';
         $count = preg_match_all($pattern, $cfg, $m);
         if ($count !== 1) {
             throw new \RuntimeException("phase 7: expected exactly one salt block, found $count");
         }
-        $cfg = preg_replace($pattern, $saltsBlock, $cfg, 1);
+        $cfg = preg_replace_callback(
+            $pattern,
+            static function () use ($saltsBlock) { return $saltsBlock; },
+            $cfg,
+            1
+        );
     }
 
     // 3. Inject WP_HOME / WP_SITEURL before the marker.
