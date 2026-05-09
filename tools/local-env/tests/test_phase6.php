@@ -19,3 +19,16 @@ function test_phase6_render_throws_when_placeholder_missing() {
         envlite_assert(strpos($e->getMessage(), 'placeholder') !== false);
     }
 }
+
+function test_phase6_render_throws_when_db_file_already_defined() {
+    $sample = "define( 'DB_NAME', 'youremptytestdbnamehere' );\n"
+            . "define( 'DB_USER', 'yourusernamehere' );\n"
+            . "define( 'DB_PASSWORD', 'yourpasswordhere' );\n"
+            . "define( 'DB_FILE', 'something.sqlite' );\n";
+    try {
+        envlite_phase6_render($sample);
+        throw new \RuntimeException('expected exception');
+    } catch (\RuntimeException $e) {
+        envlite_assert(strpos($e->getMessage(), 'DB_FILE') !== false);
+    }
+}

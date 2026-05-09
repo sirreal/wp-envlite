@@ -594,6 +594,11 @@ function envlite_phase6_render(string $sample): string {
             throw new \RuntimeException("phase 6: placeholder '$placeholder' still present after substitution");
         }
     }
+    if (preg_match("/define\\s*\\(\\s*['\"]DB_FILE['\"]/", $out)) {
+        throw new \RuntimeException(
+            "phase 6: DB_FILE already defined in wp-tests-config-sample.php; envlite assumption broken"
+        );
+    }
     return $out;
 }
 
