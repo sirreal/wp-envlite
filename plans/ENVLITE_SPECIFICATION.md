@@ -549,7 +549,7 @@ sample), and write the result to `wp-tests-config.php`:
 external command.) After the write, assert that each of the three
 placeholders is no longer present in the output (catches an upstream
 sample reshape). Then assert that the substituted bytes do not already
-contain a `DB_FILE` define (regex: `define\s*\(\s*['\"]DB_FILE['\"]`); a
+contain a `DB_FILE` define (regex: `define\s*\(\s*['"]DB_FILE['"]`); a
 match means upstream's `wp-tests-config-sample.php` has grown its own
 `DB_FILE` and envlite's append assumption no longer holds — abort with
 `envlite init: phase 6: DB_FILE already defined in wp-tests-config-sample.php; envlite assumption broken`.
