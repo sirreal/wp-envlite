@@ -536,8 +536,16 @@ function envlite_phase5_install(string $repoRoot, bool $force): void {
             if ($zip->open($tmpZip) !== true) {
                 throw new \RuntimeException("ZipArchive::open failed: $tmpZip");
             }
-            $zip->extractTo("$repoRoot/src/wp-content/plugins/");
+            // extractTo returns false on partial/failed extraction (permissions,
+            // disk full, malformed entries). Recording the directory as
+            // envlite-owned in that case would let a later run satisfy the
+            // db.copy short-circuit and skip re-downloading, leaving a
+            // half-extracted plugin tree in place.
+            $extracted = $zip->extractTo("$repoRoot/src/wp-content/plugins/");
             $zip->close();
+            if ($extracted !== true) {
+                throw new \RuntimeException("ZipArchive::extractTo failed for $tmpZip");
+            }
         } finally {
             @unlink($tmpZip);
         }
