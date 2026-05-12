@@ -297,6 +297,12 @@ function envlite_pcntl_exec_available(): bool {
 function envlite_run_dev_server(string $repoRoot, int $port): int {
     $argv = envlite_dev_server_argv($repoRoot, $port);
 
+    // Multi-worker `php -S`. Only knob PHP exposes; PHP 7.4+ on Unix, ignored
+    // on Windows. Don't clobber a user-exported value.
+    if (getenv('PHP_CLI_SERVER_WORKERS') === false) {
+        putenv('PHP_CLI_SERVER_WORKERS=3');
+    }
+
     if (PHP_OS_FAMILY !== 'Windows') {
         if (!function_exists('pcntl_exec')) {
             // Phase 0 enforces pcntl on Unix, but `serve` skips Phase 0 — so a

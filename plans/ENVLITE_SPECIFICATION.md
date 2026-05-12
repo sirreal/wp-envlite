@@ -162,6 +162,21 @@ is functionally equivalent for the user — foreground server, Ctrl-C
 shuts it down — but the process tree shows envlite as the parent of
 `php -S`.
 
+**Worker pool.** Before the launch (Unix or Windows), envlite calls
+`putenv('PHP_CLI_SERVER_WORKERS=3')` so the built-in server forks
+three worker processes and one slow request does not block every
+other one behind it. `PHP_CLI_SERVER_WORKERS` is the only knob —
+PHP exposes no CLI flag — and the variable was introduced in PHP
+7.4.0, matching envlite's preflight floor (no version gating
+needed). On Windows the variable is documented as unsupported and
+silently ignored, so setting it there is harmless. If the user has
+already exported `PHP_CLI_SERVER_WORKERS` in their environment,
+envlite leaves it alone (`getenv()` check before `putenv()`). The
+SQLite drop-in serializes writes through SQLite's file lock, so
+concurrent workers cannot corrupt `.ht.sqlite`; the worst case is a
+short serialization wait under contention, which is the same
+behavior a single worker would have produced sequentially.
+
 The router is committed at `tools/local-env/router.php` alongside
 `envlite.php`; it is not installed into the repo, the manifest does
 not track it, and `clean` does not remove it. It has no inputs (the
@@ -1053,7 +1068,22 @@ explicit user assent. Users who want a fully clean slate run
     login. `localhost` would also depend on `/etc/hosts` and the
     system resolver; `127.0.0.1` is a literal address with no
     surprises.
-14. **Test DB is isolated via `DB_FILE` in the test config only.**
+14. **`PHP_CLI_SERVER_WORKERS=3` on `php -S` launch.** PHP's built-in
+    server is single-threaded by default — one slow request (a WP
+    admin page, a long REST call) blocks everything behind it,
+    including the parallel admin-ajax calls (heartbeat, autosave) a
+    single page can fire. The env var is the only knob; there is no
+    CLI flag. Available since PHP 7.4 (matches envlite's floor, so
+    Phase 0 already guards this) and silently ignored on Windows where
+    it is documented as unsupported — setting it there is harmless,
+    so envlite's launch path is platform-uniform (`putenv()` before
+    `pcntl_exec`/`proc_open`). Three workers covers typical WP-admin
+    concurrency (the page request plus one or two parallel admin-ajax
+    calls) without meaningful memory overhead, and SQLite's file lock
+    serializes writes so the multi-worker model can't corrupt the DB.
+    A user-exported `PHP_CLI_SERVER_WORKERS` is respected (envlite
+    only `putenv()`s when the variable is unset).
+15. **Test DB is isolated via `DB_FILE` in the test config only.**
     phpunit's `tests/phpunit/includes/install.php` drops every WP
     table on every run; without isolation it would wipe the dev
     site Phase 8 installs. The split is one `define( 'DB_FILE',
