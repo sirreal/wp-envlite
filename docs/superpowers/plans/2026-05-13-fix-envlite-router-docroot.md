@@ -66,7 +66,11 @@ function envlite_test_router_wait_for_bind(int $port, float $timeout_seconds = 3
 
 function test_router_serves_from_document_root_not_router_directory() {
     // Build a fixture "site" that does NOT share a parent with router.php.
-    $site = envlite_test_tmpdir('router-docroot');
+    // realpath() normalizes /tmp -> /private/tmp on macOS so the assert
+    // below matches __DIR__ from the fixture's index.php (which resolves
+    // symlinks). On Linux this is a no-op.
+    $site = realpath(envlite_test_tmpdir('router-docroot'));
+    envlite_assert($site !== false, 'tmp fixture directory must resolve via realpath');
     file_put_contents("$site/index.php", "<?php echo 'FIXTURE_OK ' . __DIR__;");
 
     // Use the real shipped router so we exercise its path resolution.
@@ -237,3 +241,11 @@ repo's src/."
 - `envlite_test_tmpdir` is defined in `tests/test_manifest.php:2` and reused here (matching the pattern in `test_smoke.php:3` and `test_atomic.php`).
 - `envlite_assert` is defined in `tests/harness.php:2`.
 - `proc_open` with `$descriptors` array form, then `proc_terminate`/`proc_close` — standard PHP API.
+
+---
+
+## Post-implementation notes
+
+These deviated from the plan as originally written and are recorded here so future readers don't think the plan and the committed code drifted by accident.
+
+- **macOS tmpdir symlink (commit `271d7f651d`).** Plan v1 wrote `$site = envlite_test_tmpdir('router-docroot')` directly. On macOS `sys_get_temp_dir()` returns `/var/folders/...` while PHP's `__DIR__` in the fixture's `index.php` resolves symlinks to `/private/var/folders/...`, so the `'FIXTURE_OK ' . $site` assertion fails even when the router is serving the fixture correctly. Fix: wrap the tmpdir in `realpath()` and assert it resolved, before the fixture write. The Task 1 code block above has been updated in-place to match what shipped; on Linux the change is a no-op. A more durable fix would be to push the `realpath()` into `envlite_test_tmpdir` itself so every test that compares tmp paths against `__DIR__`-resolved values is portable by default — deferred until a second caller needs it.
