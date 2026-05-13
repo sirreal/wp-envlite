@@ -179,18 +179,21 @@ behavior a single worker would have produced sequentially.
 
 The router is committed at `tools/local-env/router.php` alongside
 `envlite.php`; it is not installed into the repo, the manifest does
-not track it, and `clean` does not remove it. It has no inputs (the
-port is a `php -S` argument, not baked into the file) and no
-user-tunable knobs.
+not track it, and `clean` does not remove it. Its only request-time
+inputs are the request URI and `$_SERVER['DOCUMENT_ROOT']` — the
+absolute path PHP's built-in server resolved from its `-t` argument
+— so the router file's own filesystem location is deliberately
+irrelevant. The port is a `php -S` argument, never baked into the
+file, and the router has no user-tunable knobs.
 
-The router resolves the repo's `src/` via
-`dirname(__DIR__, 2) . '/src'`, returns `false` for files that exist
-on disk so `php -S` serves them directly, and otherwise routes to
-`src/index.php`. WordPress's index.php → wp-blog-header.php →
-wp-load.php → wp-settings.php chain handles the rest, including
-`wp-admin/install.php` on first hit and pretty-permalink fallback
-once installed. The port is consumed only when `serve` runs, never
-at `init` time.
+The router uses `$_SERVER['DOCUMENT_ROOT']` to locate both static
+files and the front controller: it returns `false` for paths that
+exist on disk under the docroot so `php -S` serves them directly,
+and otherwise `require`s `<DOCUMENT_ROOT>/index.php`. WordPress's
+index.php → wp-blog-header.php → wp-load.php → wp-settings.php
+chain handles the rest, including `wp-admin/install.php` on first
+hit and pretty-permalink fallback once installed. The port is
+consumed only when `serve` runs, never at `init` time.
 
 **Bind failure.** envlite's pre-flight `port_is_free` probe (in both
 `serve` and `up`) detects an already-bound port and exits 1 with a
@@ -1097,6 +1100,23 @@ explicit user assent. Users who want a fully clean slate run
     because the rationale for tracking the live DB — possible
     user-authored content — does not apply to a file phpunit drops
     every run.
+16. **Router resolves paths via `$_SERVER['DOCUMENT_ROOT']`, not
+    from `__DIR__`.** `php -S -t <dir>` populates `DOCUMENT_ROOT`
+    with the absolute resolution of `-t`; `envlite_run_dev_server`
+    chdirs into the target repo and passes `-t src` before launch,
+    so `$_SERVER['DOCUMENT_ROOT']` always equals `<target-repo>/src`
+    at request time. Resolving from there decouples the router's
+    *resolution behavior* from the router file's *filesystem
+    location*: the router file can be loaded from a sibling envlite
+    checkout, a vendored copy, or a symlink without serving the
+    wrong repo. An earlier draft used `dirname(__DIR__, 2) . '/src'`
+    and silently broke this property — invoking envlite from one
+    worktree against a different worktree's repo loaded the
+    invoker's `wp-config.php` (with its `WP_HOME`/`WP_SITEURL`) and
+    triggered a canonical-URL 301 to the wrong port.
+    `tools/local-env/tests/test_router.php` is the regression test;
+    it boots `php -S` against a fixture docroot wholly outside the
+    router file's tree.
 
 ---
 
