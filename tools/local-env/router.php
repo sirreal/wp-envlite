@@ -8,7 +8,11 @@ if (preg_match('#(^|/)\.ht#', $path)) {
     return true;
 }
 
-$file = dirname(__DIR__, 2) . '/src' . $path;
+// DOCUMENT_ROOT is the absolute resolution of php -S's -t flag. Using it
+// instead of a path computed from __DIR__ lets the router live outside the
+// target repo (e.g. envlite invoked from a different checkout).
+$docroot = $_SERVER['DOCUMENT_ROOT'];
+$file = $docroot . $path;
 
 if ($path !== '/' && file_exists($file)) {
     if (!is_dir($file)) {
@@ -22,4 +26,4 @@ if ($path !== '/' && file_exists($file)) {
     }
 }
 
-require dirname(__DIR__, 2) . '/src/index.php';
+require $docroot . '/index.php';
