@@ -25,7 +25,11 @@ function envlite_test_router_wait_for_bind(int $port, float $timeout_seconds = 3
 
 function test_router_serves_from_document_root_not_router_directory() {
     // Build a fixture "site" that does NOT share a parent with router.php.
-    $site = envlite_test_tmpdir('router-docroot');
+    // realpath() normalizes /tmp -> /private/tmp on macOS so the assert
+    // below matches __DIR__ from the fixture's index.php (which resolves
+    // symlinks). On Linux this is a no-op.
+    $site = realpath(envlite_test_tmpdir('router-docroot'));
+    envlite_assert($site !== false, 'tmp fixture directory must resolve via realpath');
     file_put_contents("$site/index.php", "<?php echo 'FIXTURE_OK ' . __DIR__;");
 
     // Use the real shipped router so we exercise its path resolution.
