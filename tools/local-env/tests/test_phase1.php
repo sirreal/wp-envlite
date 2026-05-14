@@ -42,6 +42,26 @@ function test_phase1_uses_cached_port_when_in_range() {
     envlite_assert_eq(8421, envlite_phase1_discover_port($dir, null));
 }
 
+function test_phase1_trusts_cached_port_even_when_bound() {
+    // Spec: "Once cached, the port is reused unconditionally. The user may
+    // have envlite's own server running on it; re-probing would falsely
+    // report 'in use'." Bind a probe socket and confirm the cached port
+    // still comes back unchanged rather than being re-picked.
+    $sock = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+    envlite_assert(is_resource($sock), "could not bind probe socket: $errstr");
+    $name = stream_socket_get_name($sock, false);
+    [, $boundPort] = explode(':', $name);
+    $boundPort = (int) $boundPort;
+    try {
+        $dir = envlite_test_tmpdir('phase1-cache-bound');
+        mkdir($dir . '/.cache/envlite', 0755, true);
+        file_put_contents($dir . '/.cache/envlite/port', "$boundPort\n");
+        envlite_assert_eq($boundPort, envlite_phase1_discover_port($dir, null));
+    } finally {
+        fclose($sock);
+    }
+}
+
 function test_phase1_ignores_cache_when_out_of_range() {
     $dir = envlite_test_tmpdir('phase1-bad-cache');
     mkdir($dir . '/.cache/envlite', 0755, true);
