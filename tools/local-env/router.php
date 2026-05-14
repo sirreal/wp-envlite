@@ -2,8 +2,11 @@
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 
 // php -S does not honor Apache .ht* deny rules. Block any segment so the
-// SQLite DB at wp-content/database/.ht.sqlite is not downloadable.
-if (preg_match('#(^|/)\.ht#', $path)) {
+// SQLite DB at wp-content/database/.ht.sqlite is not downloadable. The
+// match is case-insensitive: macOS and Windows ship case-insensitive
+// filesystems by default, so a request for `/wp-content/database/.HT.sqlite`
+// would otherwise be resolved to the same DB file and served.
+if (preg_match('#(^|/)\.ht#i', $path)) {
     http_response_code(403);
     return true;
 }

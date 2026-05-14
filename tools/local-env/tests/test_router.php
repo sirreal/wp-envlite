@@ -23,6 +23,48 @@ function envlite_test_router_wait_for_bind(int $port, float $timeout_seconds = 3
     return false;
 }
 
+function test_router_blocks_ht_paths_case_insensitively() {
+    // macOS and Windows default to case-insensitive filesystems, so a
+    // request for /.HT-test resolves to a .ht-test file on disk. The
+    // router's deny rule must reject the request before letting
+    // php -S serve the underlying file.
+    $site = realpath(envlite_test_tmpdir('router-ht-case'));
+    envlite_assert($site !== false);
+    file_put_contents("$site/index.php", "<?php echo 'FALLTHROUGH';");
+    // Bait file: a real file matching the lowercase form. On case-insensitive
+    // FS, requesting /.HT-test reaches this file; the router must 403 first.
+    file_put_contents("$site/.ht-test", 'SECRET');
+
+    $router = realpath(__DIR__ . '/../router.php');
+    envlite_assert(is_file($router));
+    $port = envlite_test_router_pick_free_port();
+    $argv = [PHP_BINARY, '-S', "127.0.0.1:$port", '-t', $site, $router];
+    $proc = proc_open(
+        $argv,
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        $site
+    );
+    envlite_assert(is_resource($proc));
+
+    try {
+        envlite_assert(envlite_test_router_wait_for_bind($port));
+        foreach (['/.ht-test', '/.HT-test', '/.Ht-test'] as $reqPath) {
+            $ctx = stream_context_create(['http' => ['ignore_errors' => true]]);
+            $body = @file_get_contents("http://127.0.0.1:$port$reqPath", false, $ctx);
+            envlite_assert(strpos($http_response_header[0] ?? '', '403') !== false,
+                "expected 403 for $reqPath, got: " . ($http_response_header[0] ?? 'no headers'));
+            envlite_assert(strpos($body ?: '', 'SECRET') === false,
+                "$reqPath leaked file bytes");
+        }
+    } finally {
+        foreach ($pipes as $p) { if (is_resource($p)) { @fclose($p); } }
+        $status = @proc_get_status($proc);
+        if ($status && $status['running']) { @proc_terminate($proc, 15); }
+        @proc_close($proc);
+    }
+}
+
 function test_router_serves_from_document_root_not_router_directory() {
     // Build a fixture "site" that does NOT share a parent with router.php.
     // realpath() normalizes /tmp -> /private/tmp on macOS so the assert
