@@ -56,6 +56,39 @@ function test_phase0_required_extensions_include_pcntl_on_unix() {
     );
 }
 
+function test_phase0_pcntl_exec_check_aborts_when_function_disabled() {
+    // Spawn envlite with `-d disable_functions=pcntl_exec`. The pcntl
+    // extension still loads, so the extension-loaded check passes, but
+    // the dev-server handoff would later fail. Phase 0 must catch this
+    // up front with exit 3 + an error line naming pcntl_exec — not let
+    // the failure escape to the end of `up` after every setup phase ran.
+    if (PHP_OS_FAMILY === 'Windows') {
+        return; // pcntl is Unix-only
+    }
+    // Fixture wp-develop tree: every Phase 0 marker present so the cwd
+    // check doesn't short-circuit. The pcntl_exec check should fire first
+    // ... well, it fires AFTER the other extension/proc_open checks, but
+    // those all pass in a normal test environment.
+    $root = envlite_test_tmpdir('phase0-no-pcntl-exec');
+    mkdir("$root/src/wp-includes", 0755, true);
+    mkdir("$root/tests/phpunit/includes", 0755, true);
+    file_put_contents("$root/tests/phpunit/includes/bootstrap.php", '<?php');
+    file_put_contents("$root/package.json", '{}');
+    file_put_contents("$root/composer.json", '{}');
+    file_put_contents("$root/wp-config-sample.php", '<?php');
+    file_put_contents("$root/wp-tests-config-sample.php", '<?php');
+
+    $envlitePhp = dirname(__DIR__) . '/envlite.php';
+    [$exit, , $stderr] = envlite_proc_capture(
+        [PHP_BINARY, '-d', 'disable_functions=pcntl_exec', $envlitePhp, 'up', '--no-serve'],
+        $root
+    );
+    envlite_assert_eq(3, $exit,
+        'preflight must exit 3 when pcntl_exec is disabled');
+    envlite_assert(strpos($stderr, 'pcntl_exec') !== false,
+        'preflight error must name pcntl_exec; got: ' . substr($stderr, 0, 200));
+}
+
 function test_phase0_required_extensions_includes_existing_set() {
     // gd is required by the WP core test bootstrap (phpunit.xml.dist sets
     // WP_RUN_CORE_TESTS=1), so envlite must surface its absence at preflight.

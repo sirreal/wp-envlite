@@ -328,6 +328,16 @@ assumptions. Cheap to run and informative on failure.
    `disable_functions`, and hitting that via the version probe below
    would surface a raw PHP error rather than the documented preflight
    exit 3.
+
+   On Unix, Phase 0 additionally verifies `function_exists('pcntl_exec')`.
+   The pcntl extension being loaded (checked above) is necessary but
+   not sufficient — `disable_functions=pcntl_exec` is a documented
+   hardening option that leaves the extension visible to
+   `extension_loaded()` but disables the call envlite makes at the
+   end of `up` to hand off to `php -S`. Without this preflight, every
+   setup phase runs to completion before the dev-server launch
+   discovers the missing function and aborts; with it, the user gets
+   a one-line preflight error after milliseconds.
 4. `node`, `npm`, and `composer` are present and meet minimum versions:
    `node` ≥ 20.10, `npm` ≥ 10.2.3, `composer` ≥ 2. The `npm` floor matches
    `package.json`'s `engines.npm` so preflight catches the same constraint

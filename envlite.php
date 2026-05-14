@@ -610,6 +610,17 @@ function envlite_phase0_run(string $repoRoot): void {
         envlite_log(null, 'preflight: proc_open() is disabled; required to spawn node/npm/composer');
         exit(3);
     }
+    // pcntl_exec is what envlite_run_dev_server calls on Unix to replace
+    // its PHP process with `php -S`. Loading the pcntl extension (checked
+    // above) is necessary but not sufficient: hardened php.ini configs
+    // can list pcntl_exec in `disable_functions` even when the extension
+    // itself loads. envlite_pcntl_exec_available() is the same predicate
+    // the launcher uses; sharing it here makes preflight fail fast
+    // instead of after all setup phases.
+    if (PHP_OS_FAMILY !== 'Windows' && !envlite_pcntl_exec_available()) {
+        envlite_log(null, 'preflight: pcntl_exec() is disabled; required for the dev-server handoff on Unix');
+        exit(3);
+    }
     $tools = [
         ['node',     ['node', '--version'],     [20, 10, 0]],
         ['npm',      ['npm', '--version'],      [10, 2, 3]],
