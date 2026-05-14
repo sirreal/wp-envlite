@@ -1011,6 +1011,29 @@ function envlite_phase5_assert_placeholder(string $dbCopyPath): void {
 }
 
 /**
+ * Stage the downloaded plugin zip in a temp directory and return the
+ * full path. Throws RuntimeException (with the `phase 5:` prefix) on
+ * write failure — an unwritable temp directory or a full disk that
+ * would otherwise yield a misleading SHA256 mismatch on garbage or a
+ * short write that quietly passes verification by accident.
+ *
+ * Exposed as a separate function so the failure path is unit-testable
+ * with a caller-supplied $tmpDir; production callers pass
+ * sys_get_temp_dir().
+ */
+function envlite_phase5_stage_temp_zip(string $tmpDir, string $bytes): string {
+    $tmpZip = rtrim($tmpDir, '/\\') . '/envlite-sqlite-' . bin2hex(random_bytes(4)) . '.zip';
+    $written = @file_put_contents($tmpZip, $bytes);
+    if ($written === false || $written !== strlen($bytes)) {
+        $detail = $written === false
+            ? 'open failed'
+            : 'short write (' . $written . '/' . strlen($bytes) . ')';
+        throw new \RuntimeException("phase 5: temp-zip write to $tmpZip failed: $detail");
+    }
+    return $tmpZip;
+}
+
+/**
  * Drop the phase 5 pin SHA from state before re-entering the
  * download/extract path. Idempotent — no-op when the pin isn't recorded.
  *
@@ -1064,9 +1087,8 @@ function envlite_phase5_install(
         if (is_dir($pluginDir) && !isset($manifest[$pluginRel])) {
             envlite_prompt_or_abort($force, 'up', 'overwrite plugin tree', $pluginRel, null, null);
         }
-        $tmpZip = sys_get_temp_dir() . '/envlite-sqlite-' . bin2hex(random_bytes(4)) . '.zip';
         $bytes = $fetcher();
-        file_put_contents($tmpZip, $bytes);
+        $tmpZip = envlite_phase5_stage_temp_zip(sys_get_temp_dir(), $bytes);
         try {
             envlite_phase5_verify_sha256($tmpZip, ENVLITE_SQLITE_PLUGIN_SHA256);
             $zip = new \ZipArchive();

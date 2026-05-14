@@ -676,9 +676,14 @@ before being overwritten; `--force` answers yes to every such prompt.
    stream context that follows redirects, sets a User-Agent, and
    times out at 30 s) from a versioned wordpress.org URL of the form
    `https://downloads.wordpress.org/plugin/sqlite-database-integration.<version>.zip`
-   to a temp file under `sys_get_temp_dir()`. The version segment is
-   required: the unsuffixed `.zip` URL is a moving "latest" pointer,
-   so pairing it with a fixed SHA256 pin would break fresh installs
+   to a temp file under `sys_get_temp_dir()`. The temp-file write
+   return is checked: an unwritable temp dir or a full disk must
+   abort with a phase 5 diagnostic naming the write failure, not be
+   silently passed through to step 3 (where a missing/partial file
+   would yield a misleading SHA256 mismatch or a PHP warning).
+   The version segment is required: the unsuffixed `.zip` URL is a
+   moving "latest" pointer, so pairing it with a fixed SHA256 pin
+   would break fresh installs
    on every upstream release.
 3. Verify the downloaded **zip's** SHA256 with `hash_file('sha256', ...)`
    against the pinned value

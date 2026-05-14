@@ -68,6 +68,47 @@ function test_phase5_drop_recorded_pin_is_idempotent_without_pin() {
         'state file contents must be unchanged when pin is absent');
 }
 
+function test_phase5_stage_temp_zip_writes_bytes_to_named_path() {
+    // Happy path: returned path exists, contents match input bytes, sits
+    // inside the requested tmp dir.
+    $tmpDir = envlite_test_tmpdir('phase5-stage-ok');
+    $payload = "ZIPBYTES\x00\x01\xff";
+    $path = envlite_phase5_stage_temp_zip($tmpDir, $payload);
+    envlite_assert(strpos($path, $tmpDir) === 0,
+        "staged path must sit inside $tmpDir, got $path");
+    envlite_assert_eq($payload, file_get_contents($path));
+    @unlink($path);
+}
+
+function test_phase5_stage_temp_zip_throws_phase_5_on_unwritable_dir() {
+    // Regression: an unwritable temp dir would let file_put_contents
+    // return false, the SHA verify step then hashes nothing/garbage and
+    // throws a misleading "SHA256 mismatch" — burying the real cause.
+    // The helper checks the write return and surfaces a phase-5-prefixed
+    // diagnostic that names the temp-zip write failure.
+    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) {
+        return; // chmod 0500 doesn't bind root; Windows differs
+    }
+    $ro = envlite_test_tmpdir('phase5-stage-ro');
+    chmod($ro, 0500); // r-x for owner only
+    try {
+        $thrown = null;
+        try {
+            envlite_phase5_stage_temp_zip($ro, 'payload');
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        }
+        envlite_assert($thrown !== null,
+            'stage_temp_zip must throw on an unwritable temp dir');
+        envlite_assert(strpos($thrown->getMessage(), 'phase 5') !== false,
+            'error must carry the phase 5 prefix; got: ' . $thrown->getMessage());
+        envlite_assert(strpos($thrown->getMessage(), 'temp-zip write') !== false,
+            'error must name temp-zip write; got: ' . $thrown->getMessage());
+    } finally {
+        chmod($ro, 0755);
+    }
+}
+
 function test_phase5_install_preserves_pin_when_fetcher_throws_pre_extract() {
     // Pre-extract failures (offline HTTP, SHA mismatch, bad zip) must not
     // clear `phase5.recorded_pin_sha`. The existing plugin tree on disk
