@@ -231,6 +231,15 @@ hit and pretty-permalink fallback once installed. The port is
 consumed only by the dev-server launch at the end of `up`, never
 during the setup phases or under `up --no-serve`.
 
+The router applies `rawurldecode()` to the URI path before its
+filesystem and `.ht` checks. `php -S` decodes percent-encoding
+internally when mapping a URL to a file, so the router must too —
+otherwise (a) uploads with encoded characters (e.g. `my%20photo.jpg`
+for `my photo.jpg`) fail the `file_exists` check and fall through to
+WordPress as 404s, and (b) an encoded `.ht` segment (e.g.
+`/%2Eht.sqlite` for the SQLite DB) bypasses the raw-URI `.ht` regex
+and reaches `php -S`, which then resolves it to the real file.
+
 **Bind failure.** envlite's pre-flight `port_is_free` probe detects an
 already-bound port and exits 1 with a single stderr line:
 `envlite up: failed to bind 127.0.0.1:<port>`. No manifest mutation

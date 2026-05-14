@@ -65,6 +65,86 @@ function test_router_blocks_ht_paths_case_insensitively() {
     }
 }
 
+function test_router_serves_static_file_with_percent_encoded_name() {
+    // php -S decodes percent-encoded URIs before mapping them to files,
+    // so the router must too. Without decoding, `file_exists($docroot .
+    // '/my%20photo.jpg')` is false even when `my photo.jpg` exists on
+    // disk, the router falls through to the front controller, and the
+    // user gets WordPress's 404 instead of their upload.
+    $site = realpath(envlite_test_tmpdir('router-pctenc'));
+    envlite_assert($site !== false);
+    file_put_contents("$site/index.php", "<?php echo 'FALLTHROUGH';");
+    $payload = 'JPEGBYTES';
+    file_put_contents("$site/my photo.jpg", $payload);
+
+    $router = realpath(__DIR__ . '/../router.php');
+    envlite_assert(is_file($router));
+    $port = envlite_test_router_pick_free_port();
+    $argv = [PHP_BINARY, '-S', "127.0.0.1:$port", '-t', $site, $router];
+    $proc = proc_open(
+        $argv,
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        $site
+    );
+    envlite_assert(is_resource($proc));
+
+    try {
+        envlite_assert(envlite_test_router_wait_for_bind($port));
+        $ctx = stream_context_create(['http' => ['ignore_errors' => true]]);
+        $body = @file_get_contents("http://127.0.0.1:$port/my%20photo.jpg", false, $ctx);
+        envlite_assert(strpos($http_response_header[0] ?? '', '200') !== false,
+            'expected 200 for percent-encoded static file, got: ' . ($http_response_header[0] ?? 'no headers'));
+        envlite_assert($body === $payload,
+            'expected upload bytes, got: ' . substr($body ?: '', 0, 100));
+    } finally {
+        foreach ($pipes as $p) { if (is_resource($p)) { @fclose($p); } }
+        $status = @proc_get_status($proc);
+        if ($status && $status['running']) { @proc_terminate($proc, 15); }
+        @proc_close($proc);
+    }
+}
+
+function test_router_blocks_percent_encoded_ht_paths() {
+    // The .ht block must catch URL-encoded forms (e.g. `/%2Eht.sqlite`)
+    // as well as raw `/.ht.sqlite`. Otherwise an attacker can side-step
+    // the deny rule on the raw URI and php -S, which decodes before
+    // resolving files, serves the SQLite DB.
+    $site = realpath(envlite_test_tmpdir('router-pctenc-ht'));
+    envlite_assert($site !== false);
+    file_put_contents("$site/index.php", "<?php echo 'FALLTHROUGH';");
+    file_put_contents("$site/.ht-test", 'SECRET');
+
+    $router = realpath(__DIR__ . '/../router.php');
+    envlite_assert(is_file($router));
+    $port = envlite_test_router_pick_free_port();
+    $argv = [PHP_BINARY, '-S', "127.0.0.1:$port", '-t', $site, $router];
+    $proc = proc_open(
+        $argv,
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        $site
+    );
+    envlite_assert(is_resource($proc));
+
+    try {
+        envlite_assert(envlite_test_router_wait_for_bind($port));
+        foreach (['/%2Eht-test', '/%2eht-test', '/%2E%48%54-test'] as $reqPath) {
+            $ctx = stream_context_create(['http' => ['ignore_errors' => true]]);
+            $body = @file_get_contents("http://127.0.0.1:$port$reqPath", false, $ctx);
+            envlite_assert(strpos($http_response_header[0] ?? '', '403') !== false,
+                "expected 403 for $reqPath, got: " . ($http_response_header[0] ?? 'no headers'));
+            envlite_assert(strpos($body ?: '', 'SECRET') === false,
+                "$reqPath leaked file bytes");
+        }
+    } finally {
+        foreach ($pipes as $p) { if (is_resource($p)) { @fclose($p); } }
+        $status = @proc_get_status($proc);
+        if ($status && $status['running']) { @proc_terminate($proc, 15); }
+        @proc_close($proc);
+    }
+}
+
 function test_router_serves_from_document_root_not_router_directory() {
     // Build a fixture "site" that does NOT share a parent with router.php.
     // realpath() normalizes /tmp -> /private/tmp on macOS so the assert

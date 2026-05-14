@@ -1,5 +1,14 @@
 <?php
-$path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$rawPath = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+
+// php -S decodes percent-encoding before mapping a URL to a file, so the
+// router must decode too before its own filesystem and .ht checks. Without
+// this, (a) uploads like /wp-content/uploads/my%20photo.jpg would miss
+// `my photo.jpg` on disk and fall through to WordPress (404), and (b) a
+// probe like /%2Eht.sqlite for the SQLite drop-in's data file would
+// bypass the .ht block on the raw URI and get served by php -S as
+// `.ht.sqlite`. Decode once and apply both checks against the result.
+$path = rawurldecode($rawPath);
 
 // php -S does not honor Apache .ht* deny rules. Block any segment so the
 // SQLite DB at wp-content/database/.ht.sqlite is not downloadable. The
