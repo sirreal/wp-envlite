@@ -1251,11 +1251,30 @@ function envlite_phase7_render(string $sample, int $port, ?string $saltsBlock): 
     // them as preg_replace's replacement argument would let sequences like
     // `$1` or `\1` be interpreted as backreferences and silently corrupt the
     // saved salts. Use a callback so the block is inserted as a literal.
+    //
+    // The regex matches each define line for the eight known keys, in order,
+    // separated only by whitespace (`\s+`). An earlier `.*?` form spanned
+    // any intermediate content — so if upstream ever inserts an extra line
+    // (a comment, another define) between two salt defines, the replacement
+    // would silently delete that intervening content. The tighter regex
+    // refuses to match against a reshaped block, and the count assertion
+    // below turns that into an abort with a clear message.
     if ($saltsBlock !== null) {
-        $pattern = '/define\(\s*\'AUTH_KEY\'.*?define\(\s*\'NONCE_SALT\'\s*,\s*\'[^\']*\'\s*\);/s';
+        $saltKeys = [
+            'AUTH_KEY', 'SECURE_AUTH_KEY', 'LOGGED_IN_KEY', 'NONCE_KEY',
+            'AUTH_SALT', 'SECURE_AUTH_SALT', 'LOGGED_IN_SALT', 'NONCE_SALT',
+        ];
+        $parts = array_map(
+            static fn(string $k): string => "define\\(\\s*'" . $k . "',\\s*'[^']*'\\s*\\);",
+            $saltKeys
+        );
+        $pattern = '/' . implode('\\s+', $parts) . '/';
         $count = preg_match_all($pattern, $cfg, $m);
         if ($count !== 1) {
-            throw new \RuntimeException("phase 7: expected exactly one salt block, found $count");
+            throw new \RuntimeException(
+                "phase 7: expected exactly one contiguous AUTH_KEY..NONCE_SALT block, found $count"
+                . " (upstream sample may have inserted content between the salt defines)"
+            );
         }
         $cfg = preg_replace_callback(
             $pattern,

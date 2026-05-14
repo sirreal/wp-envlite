@@ -872,9 +872,14 @@ Distinct from Phase 6: `src/wp-config.php` is loaded by `wp-load.php`;
    `envlite up` re-runs.
 4. If salts were fetched, locate and replace the eight contiguous
    `define()` lines for `AUTH_KEY` through `NONCE_SALT` with the salts
-   payload. Use a multi-line regex anchored on the opening `define( 'AUTH_KEY'`
-   line and the closing `define( 'NONCE_SALT'` line; assert exactly one
-   match. Abort if zero or multiple.
+   payload. The regex matches each of the eight keys in order with
+   only whitespace allowed between adjacent defines — not arbitrary
+   content. A `.*?` span would silently consume an inserted line (a
+   comment, a foreign define) during replacement and produce a subtly
+   damaged `wp-config.php`; the tighter pattern refuses to match a
+   reshaped block, and the count assertion below turns that into a
+   clear phase 7 abort. Assert exactly one match; abort if zero or
+   multiple (including the reshape case).
 5. Locate the literal marker
    `/* That's all, stop editing! Happy publishing. */` (appears exactly
    once in the sample) and inject the following two lines immediately

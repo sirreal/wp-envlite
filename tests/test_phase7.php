@@ -88,6 +88,47 @@ function test_phase7_render_treats_salts_as_literal_not_backreferences() {
     );
 }
 
+function test_phase7_render_aborts_when_salt_block_is_reshaped() {
+    // Regression: the older `.*?` span between AUTH_KEY and NONCE_SALT
+    // would happily match across any inserted content and silently delete
+    // it during replacement. The tightened regex requires the eight
+    // defines to sit contiguously (whitespace-only between them), so any
+    // reshape — even a single inserted line — aborts with a phase 7
+    // diagnostic instead of subtly corrupting wp-config.php.
+    $reshaped = "<?php\r\n"
+        . "define( 'AUTH_KEY',         'put your unique phrase here' );\r\n"
+        . "define( 'SECURE_AUTH_KEY',  'put your unique phrase here' );\r\n"
+        . "define( 'WP_CACHE',         true );\r\n"  // foreign define injected mid-block
+        . "define( 'LOGGED_IN_KEY',    'put your unique phrase here' );\r\n"
+        . "define( 'NONCE_KEY',        'put your unique phrase here' );\r\n"
+        . "define( 'AUTH_SALT',        'put your unique phrase here' );\r\n"
+        . "define( 'SECURE_AUTH_SALT', 'put your unique phrase here' );\r\n"
+        . "define( 'LOGGED_IN_SALT',   'put your unique phrase here' );\r\n"
+        . "define( 'NONCE_SALT',       'put your unique phrase here' );\r\n"
+        . "define( 'DB_NAME',     'database_name_here' );\r\n"
+        . "define( 'DB_USER',     'username_here' );\r\n"
+        . "define( 'DB_PASSWORD', 'password_here' );\r\n"
+        . "/* That's all, stop editing! Happy publishing. */\r\n";
+    $salts = "define( 'AUTH_KEY', 'X' );\n"
+           . "define( 'SECURE_AUTH_KEY', 'X' );\n"
+           . "define( 'LOGGED_IN_KEY', 'X' );\n"
+           . "define( 'NONCE_KEY', 'X' );\n"
+           . "define( 'AUTH_SALT', 'X' );\n"
+           . "define( 'SECURE_AUTH_SALT', 'X' );\n"
+           . "define( 'LOGGED_IN_SALT', 'X' );\n"
+           . "define( 'NONCE_SALT', 'X' );";
+    $thrown = null;
+    try {
+        envlite_phase7_render($reshaped, 8421, $salts);
+    } catch (\RuntimeException $e) {
+        $thrown = $e;
+    }
+    envlite_assert($thrown !== null,
+        'reshaped salt block must abort, not silently span across the foreign define');
+    envlite_assert(strpos($thrown->getMessage(), 'AUTH_KEY..NONCE_SALT') !== false,
+        'error must identify the salt block; got: ' . $thrown->getMessage());
+}
+
 function test_phase7_render_normalizes_crlf_in_sample() {
     // wp-config-sample.php ships CRLF in tree on a normal checkout. The
     // render path must normalize so the output is LF-only and the recorded
