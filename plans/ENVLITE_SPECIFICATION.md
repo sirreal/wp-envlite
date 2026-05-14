@@ -1084,6 +1084,16 @@ prompting) removes each entry, then removes `.cache/envlite/` itself. Manifest
 order is the order envlite wrote things; since users are not supposed
 to edit the manifest, that order is well-defined.
 
+The final `.cache/envlite/` removal is **recursive** (rrmdir, not a
+single `rmdir`). Atomic writes can leave `.tmp` siblings of
+`manifest`/`state`/`port` behind on an interrupted run, and an
+unconditional rmdir would silently fail against a non-empty directory.
+envlite owns the whole `.cache/envlite/` subtree per the contract above,
+so recursive removal is safe. If the recursive removal still leaves the
+directory in place (permission denied, an external process holding a
+file open on Windows), `clean` reports `could not remove
+.cache/envlite/` and exits 1 so the user does not see a false success.
+
 ---
 
 ## Outputs (final repo state)

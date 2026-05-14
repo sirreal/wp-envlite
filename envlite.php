@@ -1439,11 +1439,18 @@ function envlite_cmd_clean(array $args, bool $force): int {
         return 1;
     }
 
-    // Remove .cache/envlite/ itself.
-    @unlink("$repoRoot/.cache/envlite/manifest");
-    @unlink("$repoRoot/.cache/envlite/port");
-    @unlink("$repoRoot/.cache/envlite/state");
-    @rmdir("$repoRoot/.cache/envlite");
+    // Remove .cache/envlite/ recursively. envlite owns the entire
+    // directory per the state-directory contract, so an unconditional
+    // rrmdir is correct. The previous explicit-unlink-then-rmdir form
+    // only knew about manifest/port/state, so a leftover `.tmp` sibling
+    // from an interrupted atomic write would survive: rmdir would
+    // silently fail, clean would return 0, and the next clean would
+    // be a no-op against an empty manifest while the directory persists.
+    envlite_rrmdir("$repoRoot/.cache/envlite");
+    if (is_dir("$repoRoot/.cache/envlite")) {
+        envlite_log('clean', 'could not remove .cache/envlite/');
+        return 1;
+    }
     return 0;
 }
 

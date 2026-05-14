@@ -26,12 +26,29 @@ function test_clean_removes_files_dirs_and_state() {
     $failed = envlite_clean_apply($dir, envlite_clean_collect($manifest));
     envlite_assert_eq([], $failed, 'clean_apply should report no failures');
     // Simulate the subcommand-level cleanup that follows envlite_clean_apply.
-    @unlink("$dir/.cache/envlite/manifest");
-    @rmdir("$dir/.cache/envlite");
+    envlite_rrmdir("$dir/.cache/envlite");
 
     envlite_assert(!file_exists("$dir/wp-tests-config.php"));
     envlite_assert(!is_dir("$dir/sub"));
     envlite_assert(!is_dir("$dir/.cache/envlite"));
+}
+
+function test_clean_removes_tmp_leftovers_in_cache_dir() {
+    // envlite's atomic writes go to `.cache/envlite/<name>.tmp` and rename
+    // into place; Ctrl-C between the write and the rename can leave a
+    // `.tmp` sibling behind. The old clean cleanup explicitly unlinked
+    // manifest/port/state and then `@rmdir`'d the directory — the rmdir
+    // silently fails on a non-empty dir, and clean would return 0 with
+    // `.cache/envlite/` still present and an empty manifest, making the
+    // next clean a no-op. Recursive removal is the contract.
+    $dir = envlite_test_tmpdir('clean-tmp-leftover');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    file_put_contents("$dir/.cache/envlite/manifest.tmp", 'partial');
+    file_put_contents("$dir/.cache/envlite/state.tmp", 'partial');
+
+    envlite_rrmdir("$dir/.cache/envlite");
+    envlite_assert(!is_dir("$dir/.cache/envlite"),
+        '.cache/envlite/ must be removed even when .tmp leftovers exist');
 }
 
 function test_clean_apply_reports_paths_that_remain_after_failed_deletion() {
