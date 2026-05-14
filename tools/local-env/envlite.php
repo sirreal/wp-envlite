@@ -944,7 +944,7 @@ function envlite_phase5_install(string $repoRoot, bool $force, bool $rebuild = f
     envlite_phase5_assert_placeholder($dbCopy);
 }
 
-function envlite_phase6_render(string $sample): string {
+function envlite_phase6_render(string $sample, string $phpBinary = PHP_BINARY): string {
     $replacements = [
         'youremptytestdbnamehere' => 'wordpress_test',
         'yourusernamehere'        => 'wp',
@@ -961,6 +961,25 @@ function envlite_phase6_render(string $sample): string {
             throw new \RuntimeException("phase 6: placeholder '$placeholder' still present after substitution");
         }
     }
+
+    // Pin WP_PHP_BINARY to the PHP that ran envlite. The sample's bare
+    // `'php'` is a PATH lookup, so PHPUnit's bootstrap (which shells out
+    // to WP_PHP_BINARY for tests/phpunit/includes/install.php) would
+    // otherwise use whatever `php` resolves on PATH — and that may not
+    // be the build envlite preflight-checked (different SQLite, missing
+    // extensions, wrong version).
+    $samplePhpBinary = "define( 'WP_PHP_BINARY', 'php' );";
+    if (substr_count($out, $samplePhpBinary) !== 1) {
+        throw new \RuntimeException(
+            "phase 6: WP_PHP_BINARY sample literal not found exactly once; envlite assumption broken"
+        );
+    }
+    $out = str_replace(
+        $samplePhpBinary,
+        "define( 'WP_PHP_BINARY', " . var_export($phpBinary, true) . " );",
+        $out
+    );
+
     if (preg_match("/define\\s*\\(\\s*['\"]DB_FILE['\"]/", $out)) {
         throw new \RuntimeException(
             "phase 6: DB_FILE already defined in wp-tests-config-sample.php; envlite assumption broken"

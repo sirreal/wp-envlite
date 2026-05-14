@@ -689,8 +689,21 @@ sample), and write the result to `wp-tests-config.php`:
 (Use `str_replace` or `strtr` over the file contents; do not invoke any
 external command.) After the write, assert that each of the three
 placeholders is no longer present in the output (catches an upstream
-sample reshape). Then assert that the substituted bytes do not already
-contain a `DB_FILE` define (regex: `define\s*\(\s*['"]DB_FILE['"]`); a
+sample reshape).
+
+Replace the sample's `define( 'WP_PHP_BINARY', 'php' );` line with
+`define( 'WP_PHP_BINARY', <PHP_BINARY> );`, where `<PHP_BINARY>` is the
+single-quoted absolute path of the PHP that is running envlite (PHP's
+own `PHP_BINARY` constant, var_export-escaped). PHPUnit's bootstrap
+shells out to `WP_PHP_BINARY` to run `tests/phpunit/includes/install.php`;
+leaving the sample's bare `'php'` would resolve through `PATH` and could
+pick up a different build than the one envlite preflight-checked
+(different SQLite, missing extensions, wrong version). The substitution
+is anchored on the exact sample literal — a mismatch aborts with
+`envlite up: phase 6: WP_PHP_BINARY sample literal not found exactly once; envlite assumption broken`.
+
+Then assert that the substituted bytes do not already contain a
+`DB_FILE` define (regex: `define\s*\(\s*['"]DB_FILE['"]`); a
 match means upstream's `wp-tests-config-sample.php` has grown its own
 `DB_FILE` and envlite's append assumption no longer holds — abort with
 `envlite up: phase 6: DB_FILE already defined in wp-tests-config-sample.php; envlite assumption broken`.
