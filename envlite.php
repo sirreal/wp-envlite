@@ -1587,17 +1587,6 @@ function envlite_cmd_up(array $args, bool $force): int {
     $repoRoot = getcwd();
 
     envlite_phase0_run($repoRoot);
-    // Persist the observation: ownership of the live DB carries across
-    // runs, so subsequent up/clean invocations see it in the manifest.
-    // envlite_manifest_save can throw on a failed atomic write (read-only
-    // cache dir, full disk); surface that as the documented envlite error
-    // line + exit 1 rather than letting it escape as an uncaught PHP error.
-    try {
-        envlite_observe_ht_sqlite($repoRoot, true);
-    } catch (\Throwable $e) {
-        envlite_log('up', 'observe .ht.sqlite: ' . $e->getMessage());
-        return 1;
-    }
 
     // Phase 1 may write `.cache/envlite/port` and update the manifest, and
     // envlite_atomic_write throws RuntimeException on a failed temp-file
@@ -1610,6 +1599,25 @@ function envlite_cmd_up(array $args, bool $force): int {
     });
     if ($rc !== 0) { return $rc; }
     fwrite(STDERR, "envlite up: port $resolvedPort\n");
+
+    // Persist the .ht.sqlite observation now that Phase 1 has succeeded
+    // and we are committed to running setup. The spec's bind-failure
+    // contract is "no manifest mutation occurs", and observation runs
+    // BEFORE phase 1 used to violate that: `--port=N` with N already
+    // bound (or auto-discovery with no free port in the pool) exited 1
+    // only AFTER the manifest had already gained the DB entry.
+    // Phase 1's own state writes (`.cache/envlite/port`, manifest entry)
+    // happen only on a successful bind probe, so doing the observation
+    // here keeps the contract consistent. envlite_manifest_save can
+    // still throw on a failed atomic write (read-only cache dir, full
+    // disk); surface that as the documented envlite error line + exit 1
+    // rather than letting it escape as an uncaught PHP error.
+    try {
+        envlite_observe_ht_sqlite($repoRoot, true);
+    } catch (\Throwable $e) {
+        envlite_log('up', 'observe .ht.sqlite: ' . $e->getMessage());
+        return 1;
+    }
 
     // Phases 2 & 4 in parallel (composer install || npm ci), with skip+record.
     // Pass a string label here — the spec has no "phase 24"; the parallel

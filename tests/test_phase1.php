@@ -110,6 +110,65 @@ function test_phase_guard_catches_phase1_throw_returns_one() {
     }
 }
 
+function test_up_with_bound_explicit_port_leaves_manifest_unmutated() {
+    // Round 11 regression: the .ht.sqlite observation used to run
+    // BEFORE phase 1. If `up --port=N` was invoked with N already bound,
+    // phase 1 exited 1 only after the manifest had already gained an
+    // entry for the live `.ht.sqlite` file. Spec: "no manifest mutation
+    // occurs" on bind failure. Move the observation after phase 1.
+    if (PHP_OS_FAMILY === 'Windows') { return; }
+
+    // Synthetic wp-develop checkout with a pre-existing `.ht.sqlite` —
+    // the observation has something it would otherwise record.
+    $root = envlite_test_tmpdir('phase1-bind-fail-no-mutate');
+    mkdir("$root/src/wp-includes", 0755, true);
+    mkdir("$root/tests/phpunit/includes", 0755, true);
+    mkdir("$root/src/wp-content/database", 0755, true);
+    file_put_contents("$root/tests/phpunit/includes/bootstrap.php", '<?php');
+    file_put_contents("$root/package.json", '{}');
+    file_put_contents("$root/composer.json", '{}');
+    file_put_contents("$root/wp-config-sample.php", '<?php');
+    file_put_contents("$root/wp-tests-config-sample.php", '<?php');
+    file_put_contents("$root/src/wp-content/database/.ht.sqlite", 'sqlite-content');
+
+    // Bind a port so --port=N collides.
+    $sock = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+    envlite_assert(is_resource($sock), "probe bind failed: $errstr");
+    $name = stream_socket_get_name($sock, false);
+    [, $boundPort] = explode(':', $name);
+    $boundPort = (int) $boundPort;
+
+    try {
+        $envlitePhp = dirname(__DIR__) . '/envlite.php';
+        [$exit, , $stderr] = envlite_proc_capture(
+            [PHP_BINARY, $envlitePhp, '--force', 'up', "--port=$boundPort", '--no-serve'],
+            $root
+        );
+        envlite_assert_eq(1, $exit,
+            "envlite up --port=$boundPort must exit 1 when bound; stderr: " . substr($stderr, 0, 200));
+        envlite_assert(strpos($stderr, 'phase 1') !== false,
+            'failure must be labeled phase 1; got: ' . substr($stderr, 0, 200));
+
+        // The manifest must not exist at all — or if .cache/envlite/ was
+        // created by an earlier write attempt, the manifest must not
+        // record the DB.
+        $manifestPath = "$root/.cache/envlite/manifest";
+        if (file_exists($manifestPath)) {
+            $manifest = envlite_manifest_load($root);
+            envlite_assert(
+                !isset($manifest['src/wp-content/database/.ht.sqlite']),
+                'manifest must not record .ht.sqlite when phase 1 bind probe fails'
+            );
+        }
+
+        // The DB itself is untouched.
+        envlite_assert_eq('sqlite-content',
+            file_get_contents("$root/src/wp-content/database/.ht.sqlite"));
+    } finally {
+        fclose($sock);
+    }
+}
+
 function test_phase1_ignores_cache_when_out_of_range() {
     $dir = envlite_test_tmpdir('phase1-bad-cache');
     mkdir($dir . '/.cache/envlite', 0755, true);

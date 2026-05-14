@@ -1257,14 +1257,20 @@ the setup phases complete). The file may hold user-authored content
 (posts, settings, uploads).
 
 **Observation point:** envlite observes `src/wp-content/database/.ht.sqlite`
-at the start of every `up`, again at the end of every `up` (after
-Phase 8), and at the start of every `clean`. The observation checks
-whether the file exists on disk and is not yet in the manifest; if so,
-envlite adds an entry recording the file's hash at that moment. The
-two-pass arrangement for `up` is required because Phase 8 is the
-first run that creates the DB on a fresh checkout: the start-of-up
-observation finds no file, Phase 8 then triggers WordPress to create
-`.ht.sqlite`, and the end-of-up observation records the live file.
+after Phase 1 succeeds (every `up`), again at the end of every `up`
+(after Phase 8), and at the start of every `clean`. The observation
+checks whether the file exists on disk and is not yet in the
+manifest; if so, envlite adds an entry recording the file's hash at
+that moment. The first observation runs **after** Phase 1, not
+before: phase 1's bind-failure path (`up --port=N` against a bound
+port, or auto-discovery with no free port in the pool) must leave the
+manifest unmutated per the bind-failure contract above, and running
+the persistent observation earlier would silently record the DB even
+when phase 1 then exits 1. The two-pass arrangement for `up` is
+required because Phase 8 is the first run that creates the DB on a
+fresh checkout: the first observation finds no file, Phase 8 then
+triggers WordPress to create `.ht.sqlite`, and the end-of-up
+observation records the live file.
 Without the second pass, a first successful `up` would leave the DB
 out of the manifest and a later `clean` would not prompt before
 removing it. The `up` recordings persist in the manifest as ongoing
