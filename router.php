@@ -10,6 +10,17 @@ $rawPath = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 // `.ht.sqlite`. Decode once and apply both checks against the result.
 $path = rawurldecode($rawPath);
 
+// Normalize backslashes to forward slashes before the .ht and filesystem
+// checks. PHP's file APIs treat `\` as a path separator on Windows, so a
+// decoded `%5C` would otherwise let `/wp-content/database\.ht.sqlite`
+// slip past the `(^|/)\.ht` segment regex while `file_exists($docroot .
+// $path)` still resolves to the real DB file — the router would then
+// return false and php -S would serve `.ht.sqlite`. Normalize once and
+// run every subsequent check against forward-slash-only paths. Harmless
+// on Unix where filenames may legitimately contain `\` — uploads with
+// literal backslashes are pathological in WordPress and not supported.
+$path = str_replace('\\', '/', $path);
+
 // php -S does not honor Apache .ht* deny rules. Block any segment so the
 // SQLite DB at wp-content/database/.ht.sqlite is not downloadable. The
 // match is case-insensitive: macOS and Windows ship case-insensitive

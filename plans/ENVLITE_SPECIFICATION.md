@@ -246,6 +246,14 @@ WordPress as 404s, and (b) an encoded `.ht` segment (e.g.
 `/%2Eht.sqlite` for the SQLite DB) bypasses the raw-URI `.ht` regex
 and reaches `php -S`, which then resolves it to the real file.
 
+After decoding, the router also normalizes backslashes to forward
+slashes (`str_replace('\\', '/', $path)`). Windows PHP treats `\` as
+a path separator equivalent to `/`, so a decoded `%5C` segment
+(`/wp-content/database\.ht.sqlite`) would otherwise let the `(^|/)\.ht`
+segment regex miss the `.ht` while `file_exists($docroot . $path)`
+still resolves to the real DB. Normalize once so both checks see the
+same forward-slash-only form.
+
 **Bind failure.** envlite's pre-flight `port_is_free` probe detects an
 already-bound port and exits 1 with a single stderr line:
 `envlite up: failed to bind 127.0.0.1:<port>`. No manifest mutation

@@ -145,6 +145,55 @@ function test_router_blocks_percent_encoded_ht_paths() {
     }
 }
 
+function test_router_blocks_backslash_segmented_ht_paths() {
+    // PHP's file APIs treat `\` as a path separator on Windows. The
+    // `(^|/)\.ht` regex requires a `/` boundary before `.ht`, so a
+    // request like `/wp-content/database%5C.ht.sqlite` would decode to
+    // `/wp-content/database\.ht.sqlite` and bypass the block — while
+    // `file_exists($docroot . $path)` on Windows would still resolve
+    // to the real `.ht.sqlite` and let php -S serve it. The router
+    // normalizes `\` → `/` after decode so the regex catches it.
+    //
+    // The regression manifests on Windows; this test runs on any host
+    // because it exercises the routing logic (regex + 403) rather than
+    // the OS file-resolution behavior. Without normalization the
+    // request would fall through to the front controller and the
+    // fixture would respond 200; with normalization the router 403s.
+    $site = realpath(envlite_test_tmpdir('router-backslash-ht'));
+    envlite_assert($site !== false);
+    file_put_contents("$site/index.php", "<?php echo 'FALLTHROUGH';");
+    file_put_contents("$site/.ht-test", 'SECRET');
+
+    $router = realpath(__DIR__ . '/../router.php');
+    envlite_assert(is_file($router));
+    $port = envlite_test_router_pick_free_port();
+    $argv = [PHP_BINARY, '-S', "127.0.0.1:$port", '-t', $site, $router];
+    $proc = proc_open(
+        $argv,
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        $site
+    );
+    envlite_assert(is_resource($proc));
+
+    try {
+        envlite_assert(envlite_test_router_wait_for_bind($port));
+        foreach (['/foo%5C.ht-test', '/wp-content%5C.ht-test', '/a%5cb%5c.ht-test'] as $reqPath) {
+            $ctx = stream_context_create(['http' => ['ignore_errors' => true]]);
+            $body = @file_get_contents("http://127.0.0.1:$port$reqPath", false, $ctx);
+            envlite_assert(strpos($http_response_header[0] ?? '', '403') !== false,
+                "expected 403 for $reqPath (backslash-segmented .ht), got: " . ($http_response_header[0] ?? 'no headers'));
+            envlite_assert(strpos($body ?: '', 'FALLTHROUGH') === false,
+                "$reqPath leaked to front controller");
+        }
+    } finally {
+        foreach ($pipes as $p) { if (is_resource($p)) { @fclose($p); } }
+        $status = @proc_get_status($proc);
+        if ($status && $status['running']) { @proc_terminate($proc, 15); }
+        @proc_close($proc);
+    }
+}
+
 function test_router_serves_from_document_root_not_router_directory() {
     // Build a fixture "site" that does NOT share a parent with router.php.
     // realpath() normalizes /tmp -> /private/tmp on macOS so the assert
