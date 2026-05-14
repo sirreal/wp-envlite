@@ -9,7 +9,7 @@ SQLite database. No MySQL, no Docker, no MAMP.
 From the repo root:
 
 ```sh
-php tools/local-env/envlite.php up
+php envlite.php up
 ```
 
 That sets up the environment and starts the dev server in the
