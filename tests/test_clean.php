@@ -51,6 +51,66 @@ function test_clean_removes_tmp_leftovers_in_cache_dir() {
         '.cache/envlite/ must be removed even when .tmp leftovers exist');
 }
 
+function test_observe_ht_sqlite_persist_writes_manifest() {
+    // up-mode: $persist=true → augmented manifest is written to disk so
+    // subsequent runs see the DB as envlite-owned.
+    $dir = envlite_test_tmpdir('observe-persist');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    mkdir("$dir/src/wp-content/database", 0755, true);
+    file_put_contents("$dir/src/wp-content/database/.ht.sqlite", 'sqlite-bytes');
+
+    $manifest = envlite_observe_ht_sqlite($dir, true);
+    envlite_assert(isset($manifest['src/wp-content/database/.ht.sqlite']),
+        'in-memory manifest must include the observation');
+
+    $onDisk = envlite_manifest_load($dir);
+    envlite_assert(isset($onDisk['src/wp-content/database/.ht.sqlite']),
+        'on-disk manifest must include the observation in persist mode');
+    envlite_assert_eq(
+        hash('sha256', 'sqlite-bytes'),
+        $onDisk['src/wp-content/database/.ht.sqlite']
+    );
+}
+
+function test_observe_ht_sqlite_transient_leaves_disk_manifest_unchanged() {
+    // clean-mode: $persist=false → augmented manifest is returned for the
+    // caller's use but the on-disk manifest is NOT touched. Spec requires
+    // this so that aborting the clean prompt does not leave a permanent
+    // ownership record of a user-authored DB.
+    $dir = envlite_test_tmpdir('observe-transient');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    mkdir("$dir/src/wp-content/database", 0755, true);
+    file_put_contents("$dir/src/wp-content/database/.ht.sqlite", 'sqlite-bytes');
+
+    // Seed an existing manifest so we can detect any disk-side write.
+    $original = ['src/wp-config.php' => str_repeat('a', 64)];
+    envlite_manifest_save($dir, $original);
+    $diskBefore = file_get_contents("$dir/.cache/envlite/manifest");
+
+    $manifest = envlite_observe_ht_sqlite($dir, false);
+    envlite_assert(isset($manifest['src/wp-content/database/.ht.sqlite']),
+        'in-memory manifest must include the observation in transient mode');
+
+    $diskAfter = file_get_contents("$dir/.cache/envlite/manifest");
+    envlite_assert_eq($diskBefore, $diskAfter,
+        'transient mode must not write to the on-disk manifest');
+
+    $onDisk = envlite_manifest_load($dir);
+    envlite_assert(!isset($onDisk['src/wp-content/database/.ht.sqlite']),
+        'on-disk manifest must not gain the observation in transient mode');
+    envlite_assert_eq($original, $onDisk);
+}
+
+function test_observe_ht_sqlite_returns_existing_manifest_when_db_missing() {
+    $dir = envlite_test_tmpdir('observe-no-db');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    $seed = ['src/wp-config.php' => str_repeat('a', 64)];
+    envlite_manifest_save($dir, $seed);
+
+    envlite_assert_eq($seed, envlite_observe_ht_sqlite($dir, true));
+    envlite_assert_eq($seed, envlite_observe_ht_sqlite($dir, false));
+}
+
 function test_clean_apply_reports_paths_that_remain_after_failed_deletion() {
     if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) {
         // Root can delete read-only-parent files; this test needs a

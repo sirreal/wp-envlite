@@ -1327,7 +1327,9 @@ function envlite_cmd_up(array $args, bool $force): int {
     $repoRoot = getcwd();
 
     envlite_phase0_run($repoRoot);
-    envlite_observe_ht_sqlite($repoRoot);
+    // Persist the observation: ownership of the live DB carries across
+    // runs, so subsequent up/clean invocations see it in the manifest.
+    envlite_observe_ht_sqlite($repoRoot, true);
 
     // Phase 1 may write `.cache/envlite/port` and update the manifest, and
     // envlite_atomic_write throws RuntimeException on a failed temp-file
@@ -1405,18 +1407,36 @@ function envlite_phase_guard(string $sub, int $n, callable $fn): int {
     }
 }
 
-function envlite_observe_ht_sqlite(string $repoRoot): void {
+/**
+ * Record the live `.ht.sqlite` as envlite-tracked content when present
+ * and not already known. The augmented manifest is returned in every
+ * case so callers that need the in-memory view get it.
+ *
+ * $persist=true (up): writes the augmented manifest to disk so the
+ * observation survives across runs. envlite owns the DB from this point
+ * on, and subsequent re-runs treat it as such for drift/ownership.
+ *
+ * $persist=false (clean): leaves the on-disk manifest untouched. The
+ * spec calls this recording transient — it exists only so the file
+ * appears in *this* clean invocation's prompt list. If the user
+ * declines the prompt (or exits non-interactively), the manifest must
+ * remain as it was on disk before clean started, or the next `up`
+ * would treat the DB as envlite-owned content that envlite never wrote.
+ */
+function envlite_observe_ht_sqlite(string $repoRoot, bool $persist): array {
     $rel = 'src/wp-content/database/.ht.sqlite';
     $abs = "$repoRoot/$rel";
-    if (!is_file($abs)) { return; }
     $manifest = envlite_manifest_load($repoRoot);
-    if (isset($manifest[$rel])) { return; }
+    if (!is_file($abs) || isset($manifest[$rel])) { return $manifest; }
     $bytes = @file_get_contents($abs);
     // Read failure: leave the file unrecorded rather than capturing the
     // empty-string hash. clean will treat it as user-owned, which is correct.
-    if ($bytes === false) { return; }
+    if ($bytes === false) { return $manifest; }
     $manifest[$rel] = hash('sha256', $bytes);
-    envlite_manifest_save($repoRoot, $manifest);
+    if ($persist) {
+        envlite_manifest_save($repoRoot, $manifest);
+    }
+    return $manifest;
 }
 
 function envlite_cmd_clean(array $args, bool $force): int {
@@ -1430,8 +1450,12 @@ function envlite_cmd_clean(array $args, bool $force): int {
         return 0;
     }
 
-    envlite_observe_ht_sqlite($repoRoot);
-    $manifest = envlite_manifest_load($repoRoot);
+    // Transient observation: the .ht.sqlite entry exists only so the file
+    // appears in this clean invocation's prompt. If the user declines or
+    // the prompt aborts non-interactively, the on-disk manifest must
+    // remain unchanged — otherwise a subsequent `up` would see the DB as
+    // envlite-tracked content it never wrote.
+    $manifest = envlite_observe_ht_sqlite($repoRoot, false);
     $paths = envlite_clean_collect($manifest);
 
     $failed = [];
