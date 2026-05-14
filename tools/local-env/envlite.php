@@ -160,9 +160,10 @@ function envlite_ownership(array $manifest, string $relPath, ?string $currentByt
     if ($recorded === null) { return 'unowned'; }
     if ($recorded === 'dir') { return 'owned_clean'; }
     if ($currentBytes === null) {
-        // Recorded as file but currentBytes wasn't provided — caller missed reading it.
-        // Treat as drifted; safer to prompt.
-        return 'owned_drifted';
+        // Manifest says envlite owns this path but the file is gone (user
+        // deleted it). Nothing on disk to drift against — safe to recreate
+        // without prompting.
+        return 'owned_clean';
     }
     return hash('sha256', $currentBytes) === $recorded ? 'owned_clean' : 'owned_drifted';
 }

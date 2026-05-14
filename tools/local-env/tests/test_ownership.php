@@ -33,6 +33,19 @@ function test_ownership_unowned() {
     );
 }
 
+function test_ownership_owned_file_missing_on_disk_is_recreatable() {
+    // If the manifest records an envlite-owned file but the user deleted it,
+    // there is nothing to overwrite. Treat as safe to recreate (no prompt).
+    envlite_assert_eq(
+        'owned_clean',
+        envlite_ownership(
+            ['src/wp-config.php' => str_repeat('a', 64)],
+            'src/wp-config.php',
+            null
+        )
+    );
+}
+
 function test_ownership_dir_entry_in_manifest() {
     // For directory entries, the "current bytes" is null; presence on disk
     // makes it owned_clean (we don't drift-check directory contents).
