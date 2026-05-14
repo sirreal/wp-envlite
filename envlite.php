@@ -1019,7 +1019,19 @@ function envlite_phase5_drop_recorded_pin(string $repoRoot): void {
     envlite_state_save($repoRoot, $state);
 }
 
-function envlite_phase5_install(string $repoRoot, bool $force, bool $rebuild = false): void {
+function envlite_phase5_install(
+    string $repoRoot,
+    bool $force,
+    bool $rebuild = false,
+    ?callable $fetcher = null
+): void {
+    // $fetcher is dependency-injected so tests can exercise pre-extract
+    // failure paths (HTTP throw, offline) without network. Production
+    // callers pass null and get the real wordpress.org fetch.
+    $fetcher = $fetcher ?? static function (): string {
+        return envlite_http_get(ENVLITE_SQLITE_PLUGIN_URL);
+    };
+
     $pluginDir = "$repoRoot/src/wp-content/plugins/sqlite-database-integration";
     $dbCopy    = "$pluginDir/db.copy";
     $dbPhpRel  = 'src/wp-content/db.php';
@@ -1041,14 +1053,8 @@ function envlite_phase5_install(string $repoRoot, bool $force, bool $rebuild = f
         if (is_dir($pluginDir) && !isset($manifest[$pluginRel])) {
             envlite_prompt_or_abort($force, 'up', 'overwrite plugin tree', $pluginRel, null, null);
         }
-        // Invalidate the recorded pin SHA before extraction. See
-        // envlite_phase5_drop_recorded_pin() for the failure mode this
-        // prevents. Refresh $state afterwards so the in-memory copy
-        // matches what we'll re-record on success below.
-        envlite_phase5_drop_recorded_pin($repoRoot);
-        unset($state['phase5.recorded_pin_sha']);
         $tmpZip = sys_get_temp_dir() . '/envlite-sqlite-' . bin2hex(random_bytes(4)) . '.zip';
-        $bytes = envlite_http_get(ENVLITE_SQLITE_PLUGIN_URL);
+        $bytes = $fetcher();
         file_put_contents($tmpZip, $bytes);
         try {
             envlite_phase5_verify_sha256($tmpZip, ENVLITE_SQLITE_PLUGIN_SHA256);
@@ -1056,6 +1062,15 @@ function envlite_phase5_install(string $repoRoot, bool $force, bool $rebuild = f
             if ($zip->open($tmpZip) !== true) {
                 throw new \RuntimeException("ZipArchive::open failed: $tmpZip");
             }
+            // Invalidate the recorded pin SHA *here*, immediately before
+            // extractTo touches disk. See envlite_phase5_drop_recorded_pin()
+            // for the failure mode this prevents. Doing it earlier — before
+            // the fetch/SHA/zip-open steps — would invalidate the pin even
+            // when the existing plugin tree was never modified (offline
+            // re-run, transient HTTP failure, SHA mismatch from a partial
+            // download), forcing every subsequent `up` to re-fetch.
+            envlite_phase5_drop_recorded_pin($repoRoot);
+            unset($state['phase5.recorded_pin_sha']);
             // extractTo returns false on partial/failed extraction (permissions,
             // disk full, malformed entries). Recording the directory as
             // envlite-owned in that case would let a later run satisfy the

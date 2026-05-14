@@ -680,14 +680,18 @@ before being overwritten; `--force` answers yes to every such prompt.
    `.cache/envlite/state` once extraction succeeds — subsequent `up` runs
    compare against this to detect a code-level pin bump.
 
-   Before invoking `ZipArchive::extractTo`, drop any pre-existing
-   `phase5.recorded_pin_sha` entry from state. `extractTo` recreates
-   `db.copy` early in the zip stream, so a mid-extraction failure can
-   leave the step-1 skip predicate (manifest entry + `db.copy` +
-   matching pin) satisfied on the next `up`, which would then short-
-   circuit step 2 against a partial plugin tree. Invalidate-before-run
-   + record-on-success guarantees the next `up` re-attempts after any
-   failure, matching the npm/composer/build phases' pattern.
+   Immediately before invoking `ZipArchive::extractTo`, drop any
+   pre-existing `phase5.recorded_pin_sha` entry from state.
+   `extractTo` recreates `db.copy` early in the zip stream, so a
+   mid-extraction failure can leave the step-1 skip predicate
+   (manifest entry + `db.copy` + matching pin) satisfied on the next
+   `up`, which would then short-circuit step 2 against a partial
+   plugin tree. Drop the pin and re-record it only on extraction
+   success. Pre-extraction failures (HTTP fetch error, temp-file
+   write, SHA mismatch, `ZipArchive::open`) do not touch the existing
+   plugin tree on disk, so the pin must remain intact for those —
+   otherwise a transient offline re-run with a known-good install
+   would forfeit the cached skip and keep requiring network access.
 5. Copy `src/wp-content/plugins/sqlite-database-integration/db.copy` to
    `src/wp-content/db.php` (byte-for-byte). This is the activation step —
    `wp-settings.php` autoloads `wp-content/db.php` when present.

@@ -68,6 +68,41 @@ function test_phase5_drop_recorded_pin_is_idempotent_without_pin() {
         'state file contents must be unchanged when pin is absent');
 }
 
+function test_phase5_install_preserves_pin_when_fetcher_throws_pre_extract() {
+    // Pre-extract failures (offline HTTP, SHA mismatch, bad zip) must not
+    // clear `phase5.recorded_pin_sha`. The existing plugin tree on disk
+    // is untouched by those paths, so the next `up` should still satisfy
+    // the manifest + db.copy + pin skip predicate and run offline.
+    //
+    // We exercise this by routing the install through a fetcher that
+    // throws immediately. The pin invalidation point sits AFTER fetch/
+    // verify/zip-open, so the throw aborts before any state mutation.
+    $dir = envlite_test_make_fixture_repo();
+    $pin = ENVLITE_SQLITE_PLUGIN_SHA256;
+    envlite_manifest_save($dir, [
+        'src/wp-content/plugins/sqlite-database-integration' => 'dir',
+    ]);
+    envlite_state_save($dir, ['phase5.recorded_pin_sha' => $pin]);
+    // Drop db.copy to force the re-extract path. Manifest + pin remain
+    // intact, so the skip predicate fails only on `is_file($dbCopy)`.
+    unlink("$dir/src/wp-content/plugins/sqlite-database-integration/db.copy");
+
+    $threw = false;
+    try {
+        envlite_phase5_install($dir, true, false, static function (): string {
+            throw new \RuntimeException('fetcher offline');
+        });
+    } catch (\RuntimeException $e) {
+        $threw = strpos($e->getMessage(), 'fetcher offline') !== false;
+    }
+    envlite_assert($threw, 'fetcher RuntimeException must propagate out of phase5_install');
+
+    $state = envlite_state_load($dir);
+    envlite_assert(isset($state['phase5.recorded_pin_sha']),
+        'pin must remain in state after a pre-extract failure');
+    envlite_assert_eq($pin, $state['phase5.recorded_pin_sha']);
+}
+
 function test_phase5_tripwire_throws_when_placeholder_missing() {
     $dir = envlite_test_tmpdir('tripwire-missing');
     file_put_contents($dir . '/db.copy', '<?php // someone substituted the placeholder');
