@@ -6,7 +6,7 @@ SQLite database. No MySQL, no Docker, no MAMP.
 
 ## Quickstart
 
-From the repo root:
+From the [wordpress-develop](https://github.com/wordpress/wordpress-develop/) repo root:
 
 ```sh
 php envlite.php up
