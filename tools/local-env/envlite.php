@@ -592,6 +592,11 @@ function envlite_run_parallel_buffered(array $jobs): array {
         $streamLabel[(int) $pipes[2]] = $label;
     }
 
+    // PHP's stream_select() cannot observe proc_open() pipes on Windows
+    // (returns false unconditionally), so on Windows we poll the
+    // already-non-blocking pipes with a short sleep instead.
+    $isWindows = PHP_OS_FAMILY === 'Windows';
+
     while (true) {
         $read = [];
         foreach ($procs as $p) {
@@ -600,10 +605,14 @@ function envlite_run_parallel_buffered(array $jobs): array {
         }
         if (empty($read)) { break; }
 
-        $write = $except = null;
-        $n = @stream_select($read, $write, $except, 1);
-        if ($n === false) { continue; } // EINTR — retry
-        if ($n === 0)     { continue; } // timeout — retry
+        if ($isWindows) {
+            usleep(50_000);
+        } else {
+            $write = $except = null;
+            $n = @stream_select($read, $write, $except, 1);
+            if ($n === false) { continue; } // EINTR — retry
+            if ($n === 0)     { continue; } // timeout — retry
+        }
 
         foreach ($read as $stream) {
             $label = $streamLabel[(int) $stream] ?? null;
