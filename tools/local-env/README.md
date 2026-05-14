@@ -14,7 +14,7 @@ php tools/local-env/envlite.php up
 
 That sets up the environment and starts the dev server in the
 foreground at `http://127.0.0.1:<port>`, where `<port>` is auto-picked
-from 8100–8899 on first run and cached at `.envlite/port` for reuse.
+from 8100–8899 on first run and cached at `.cache/envlite/port` for reuse.
 Open the URL it prints; log in at `/wp-login.php` with `admin` /
 `password`. Ctrl-C shuts it down.
 

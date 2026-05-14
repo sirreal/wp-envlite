@@ -37,17 +37,17 @@ function test_phase1_port_is_free_returns_false_when_bound() {
 
 function test_phase1_uses_cached_port_when_in_range() {
     $dir = envlite_test_tmpdir('phase1-cache');
-    mkdir($dir . '/.envlite');
-    file_put_contents($dir . '/.envlite/port', "8421\n");
+    mkdir($dir . '/.cache/envlite', 0755, true);
+    file_put_contents($dir . '/.cache/envlite/port', "8421\n");
     envlite_assert_eq(8421, envlite_phase1_discover_port($dir, null));
 }
 
 function test_phase1_ignores_cache_when_out_of_range() {
     $dir = envlite_test_tmpdir('phase1-bad-cache');
-    mkdir($dir . '/.envlite');
+    mkdir($dir . '/.cache/envlite', 0755, true);
     // 70000 is outside the 1..65535 cached-port acceptance window, so the
     // cache must be ignored and a fresh port picked from the auto pool.
-    file_put_contents($dir . '/.envlite/port', "70000\n");
+    file_put_contents($dir . '/.cache/envlite/port', "70000\n");
     $port = envlite_phase1_discover_port($dir, null);
     envlite_assert($port >= 8100 && $port <= 8899);
 }

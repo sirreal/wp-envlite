@@ -12,7 +12,7 @@ function test_state_save_then_load_round_trip() {
         'phase5.recorded_pin_sha' => str_repeat('c', 64),
     ];
     envlite_state_save($dir, $entries);
-    envlite_assert(is_file("$dir/.envlite/state"));
+    envlite_assert(is_file("$dir/.cache/envlite/state"));
 
     $loaded = envlite_state_load($dir);
     envlite_assert_eq($entries, $loaded);
@@ -21,16 +21,16 @@ function test_state_save_then_load_round_trip() {
 function test_state_save_writes_tab_delimited_lines() {
     $dir = envlite_test_tmpdir('state-format');
     envlite_state_save($dir, ['phase2.input_hash' => str_repeat('a', 64)]);
-    $bytes = file_get_contents("$dir/.envlite/state");
+    $bytes = file_get_contents("$dir/.cache/envlite/state");
     // One line, tab between key and value, trailing newline.
     envlite_assert_eq("phase2.input_hash\t" . str_repeat('a', 64) . "\n", $bytes);
 }
 
 function test_state_load_ignores_malformed_lines() {
     $dir = envlite_test_tmpdir('state-malformed');
-    mkdir("$dir/.envlite", 0755, true);
+    mkdir("$dir/.cache/envlite", 0755, true);
     file_put_contents(
-        "$dir/.envlite/state",
+        "$dir/.cache/envlite/state",
         "good\tvalue\nbadline-no-tab\n\nphase2.input_hash\thashvalue\n"
     );
     envlite_assert_eq(
@@ -46,5 +46,5 @@ function test_state_save_overwrites_atomically() {
     envlite_state_save($dir, ['k' => 'v1']);
     envlite_state_save($dir, ['k' => 'v2', 'k2' => 'v3']);
     envlite_assert_eq(['k' => 'v2', 'k2' => 'v3'], envlite_state_load($dir));
-    envlite_assert(!file_exists("$dir/.envlite/state.tmp"), 'no .tmp residue');
+    envlite_assert(!file_exists("$dir/.cache/envlite/state.tmp"), 'no .tmp residue');
 }

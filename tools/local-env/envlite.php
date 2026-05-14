@@ -27,7 +27,7 @@ function envlite_help_text(): string {
 
 		Flags:
 		  --port=N      Port for the dev server. Default: derived from the
-		                checkout path, cached at .envlite/port.
+		                checkout path, cached at .cache/envlite/port.
 		  --no-build    Skip `npm run build:dev` even if inputs changed.
 		  --no-serve    Run setup phases only; don't launch the server.
 		  --rebuild     Re-run every setup phase, ignoring cached state.
@@ -62,7 +62,7 @@ function envlite_path_relative_to(string $root, string $abs): string {
 }
 
 function envlite_manifest_path(string $repoRoot): string {
-    return rtrim(envlite_path_to_posix($repoRoot), '/') . '/.envlite/manifest';
+    return rtrim(envlite_path_to_posix($repoRoot), '/') . '/.cache/envlite/manifest';
 }
 
 function envlite_manifest_load(string $repoRoot): array {
@@ -88,12 +88,12 @@ function envlite_manifest_save(string $repoRoot, array $entries): void {
     }
     $manifestPath = envlite_manifest_path($repoRoot);
     $dir = dirname($manifestPath);
-    if (!is_dir($dir)) { mkdir($dir, 0700, true); }
+    if (!is_dir($dir)) { mkdir($dir, 0755, true); }
     envlite_atomic_write($manifestPath, $lines);
 }
 
 function envlite_state_path(string $repoRoot): string {
-    return rtrim(envlite_path_to_posix($repoRoot), '/') . '/.envlite/state';
+    return rtrim(envlite_path_to_posix($repoRoot), '/') . '/.cache/envlite/state';
 }
 
 function envlite_state_load(string $repoRoot): array {
@@ -120,7 +120,7 @@ function envlite_state_save(string $repoRoot, array $entries): void {
     }
     $path = envlite_state_path($repoRoot);
     $dir = dirname($path);
-    if (!is_dir($dir)) { mkdir($dir, 0700, true); }
+    if (!is_dir($dir)) { mkdir($dir, 0755, true); }
     envlite_atomic_write($path, $lines);
 }
 
@@ -457,7 +457,7 @@ function envlite_phase1_port_is_free(int $port): bool {
 }
 
 function envlite_phase1_discover_port(string $repoRoot, ?int $explicitPort): int {
-    $cachePath = rtrim(envlite_path_to_posix($repoRoot), '/') . '/.envlite/port';
+    $cachePath = rtrim(envlite_path_to_posix($repoRoot), '/') . '/.cache/envlite/port';
 
     if ($explicitPort !== null) {
         if (!envlite_phase1_port_is_free($explicitPort)) {
@@ -489,10 +489,10 @@ function envlite_phase1_discover_port(string $repoRoot, ?int $explicitPort): int
 }
 
 function envlite_phase1_write_cache(string $repoRoot, int $port): void {
-    $cachePath = rtrim(envlite_path_to_posix($repoRoot), '/') . '/.envlite/port';
+    $cachePath = rtrim(envlite_path_to_posix($repoRoot), '/') . '/.cache/envlite/port';
     $hash = envlite_atomic_write($cachePath, "$port\n");
     $manifest = envlite_manifest_load($repoRoot);
-    $manifest['.envlite/port'] = $hash;
+    $manifest['.cache/envlite/port'] = $hash;
     envlite_manifest_save($repoRoot, $manifest);
 }
 
@@ -1197,8 +1197,8 @@ function envlite_cmd_clean(array $args, bool $force): int {
         return 2;
     }
     $repoRoot = getcwd();
-    if (!is_dir("$repoRoot/.envlite")) {
-        envlite_log('clean', 'nothing to clean (no .envlite/ directory)');
+    if (!is_dir("$repoRoot/.cache/envlite")) {
+        envlite_log('clean', 'nothing to clean (no .cache/envlite/ directory)');
         return 0;
     }
 
@@ -1207,7 +1207,7 @@ function envlite_cmd_clean(array $args, bool $force): int {
     $paths = envlite_clean_collect($manifest);
 
     if (empty($paths)) {
-        envlite_log('clean', 'manifest is empty; removing .envlite/ only');
+        envlite_log('clean', 'manifest is empty; removing .cache/envlite/ only');
     } else {
         // Single batch prompt.
         if (!$force) {
@@ -1228,11 +1228,11 @@ function envlite_cmd_clean(array $args, bool $force): int {
         envlite_clean_apply($repoRoot, $paths);
     }
 
-    // Remove .envlite/ itself.
-    @unlink("$repoRoot/.envlite/manifest");
-    @unlink("$repoRoot/.envlite/port");
-    @unlink("$repoRoot/.envlite/state");
-    @rmdir("$repoRoot/.envlite");
+    // Remove .cache/envlite/ itself.
+    @unlink("$repoRoot/.cache/envlite/manifest");
+    @unlink("$repoRoot/.cache/envlite/port");
+    @unlink("$repoRoot/.cache/envlite/state");
+    @rmdir("$repoRoot/.cache/envlite");
     return 0;
 }
 

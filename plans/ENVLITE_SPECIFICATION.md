@@ -69,7 +69,7 @@ shorthand for the full command line.
 | `clean` | Remove envlite-managed files (manifest entries). Does not touch `node_modules/`, `vendor/`, or build artifacts under `src/`. |
 
 There is no `init`, no `serve`, no `verify`. `up` is what users run.
-The cached port lives at `.envlite/port` and is one `cat` away.
+The cached port lives at `.cache/envlite/port` and is one `cat` away.
 
 ### Global flags
 
@@ -82,7 +82,7 @@ The cached port lives at `.envlite/port` and is one `cat` away.
 
 - `up [--port=N] [--no-build] [--no-serve] [--rebuild]`
   - `--port=N` skips Phase 1 discovery and uses the given port. Updates
-    `.envlite/port` to N.
+    `.cache/envlite/port` to N.
   - `--no-build` skips Phase 3 (`npm run build:dev`) even when the skip
     rule would otherwise have run it. Useful when iterating on PHP-only
     changes.
@@ -90,7 +90,7 @@ The cached port lives at `.envlite/port` and is one `cat` away.
     without launching the dev server. The CI / automation form. The
     setup phases are identical to a normal `up` — same skip rules, same
     state writes — only the trailing `php -S` launch is suppressed.
-  - `--rebuild` discards the `.envlite/state` file's recorded skip
+  - `--rebuild` discards the `.cache/envlite/state` file's recorded skip
     state for this invocation only. Every phase runs as if envlite had
     never observed its inputs before. Successful phases re-record state
     normally. Use when state is suspect or when validating a fresh
@@ -117,7 +117,7 @@ confirm the env is wired up:
 
 ```sh
 ./vendor/bin/phpunit
-curl -sI http://127.0.0.1:$(cat .envlite/port)/
+curl -sI http://127.0.0.1:$(cat .cache/envlite/port)/
 ```
 
 Phpunit booting against the SQLite drop-in + a 2xx HTTP status (not a
@@ -243,7 +243,7 @@ surfaced to the shell is `php -S`'s, not envlite's.
 
 ## Phase 0 — Preflight
 
-> envlite tracks every file it writes in `.envlite/manifest` and never
+> envlite tracks every file it writes in `.cache/envlite/manifest` and never
 > overwrites or deletes anything it doesn't demonstrably own without
 > prompting first. See the **State and ownership** section below the
 > phases for the full contract — it shapes Phases 5–7 and `clean`.
@@ -330,14 +330,14 @@ invocations so that bookmarks/links don't rot.
   that re-running `envlite up` after `envlite clean` returns the same
   port whenever possible.
 
-**Cache location:** `.envlite/port`. See "envlite state directory"
+**Cache location:** `.cache/envlite/port`. See "envlite state directory"
 above for the broader contract.
 
 **Algorithm (pseudocode):**
 
 ```
 function discover_port(repoRoot):
-    cacheFile = repoRoot + "/.envlite/port"
+    cacheFile = repoRoot + "/.cache/envlite/port"
     if file_exists(cacheFile):
         cached = (int) trim(read(cacheFile))
         if 1 <= cached <= 65535:
@@ -358,9 +358,9 @@ function discover_port(repoRoot):
     for i in 0 .. POOL_SIZE-1:
         candidate = POOL_LOW + ((start - POOL_LOW + i) mod POOL_SIZE)
         if port_is_free(candidate):
-            ensure_dir(repoRoot + "/.envlite")
+            ensure_dir(repoRoot + "/.cache/envlite")
             write(cacheFile, str(candidate))
-            record_in_manifest(".envlite/port")
+            record_in_manifest(".cache/envlite/port")
             return candidate
 
     error "no free port in 8100-8899"
@@ -402,9 +402,9 @@ function port_is_free(port):
   1–65535 — the auto-discovery pool is not enforced on explicit ports,
   so familiar choices like `8080` or `3000` are honored.
 - To pick a different port without specifying one, delete
-  `.envlite/port` and re-run `up`.
+  `.cache/envlite/port` and re-run `up`.
 
-**Outputs:** `.envlite/port` (text file, single integer); manifest entry.
+**Outputs:** `.cache/envlite/port` (text file, single integer); manifest entry.
 
 ---
 
@@ -424,7 +424,7 @@ non-zero if `npm` exits non-zero.
 **Skip rule:** envlite skips Phase 2 if **all three** are true:
 
 1. `node_modules/` exists on disk.
-2. `.envlite/state` records a `phase2.input_hash` whose value equals
+2. `.cache/envlite/state` records a `phase2.input_hash` whose value equals
    `hash_file('sha256', 'package-lock.json')`.
 3. `--rebuild` was not passed.
 
@@ -486,12 +486,12 @@ exits with the cryptic message "ABSPATH constant ... non-existent path".
 2. Phase 4 was skipped this run (i.e. `vendor/` is current).
 3. `src/wp-includes/version.php` exists on disk (sentinel for "build
    has succeeded at least once").
-4. `.envlite/state` records `phase3.recorded_npm_hash` matching the
+4. `.cache/envlite/state` records `phase3.recorded_npm_hash` matching the
    current `package-lock.json` hash, AND `phase3.recorded_composer_hash`
    matching the current `composer.json` hash.
 
 The verbose recorded hashes (rather than a single concat hash) are
-deliberately readable: `cat .envlite/state` shows an implementer
+deliberately readable: `cat .cache/envlite/state` shows an implementer
 exactly which dependency state was current the last time `build:dev`
 succeeded.
 
@@ -532,7 +532,7 @@ configured. No lockfile is created.
 **Skip rule:** mirrors Phase 2, but keyed on `composer.json`:
 
 1. `vendor/` exists on disk.
-2. `.envlite/state` records `phase4.input_hash` matching
+2. `.cache/envlite/state` records `phase4.input_hash` matching
    `hash_file('sha256', 'composer.json')`.
 3. `--rebuild` was not passed.
 
@@ -575,7 +575,7 @@ before being overwritten; `--force` answers yes to every such prompt.
 
 1. If `src/wp-content/plugins/sqlite-database-integration/` is recorded
    in the manifest (envlite-owned `dir` entry) **and** its `db.copy` is
-   present locally **and** `.envlite/state` records a
+   present locally **and** `.cache/envlite/state` records a
    `phase5.recorded_pin_sha` matching the literal
    `ENVLITE_SQLITE_PLUGIN_SHA256` in `envlite.php`, skip steps 2–4 and
    proceed to step 5. The pinned plugin tree from a prior `up` is
@@ -604,7 +604,7 @@ before being overwritten; `--force` answers yes to every such prompt.
    pinned tree on top of whatever was there. Record the directory in
    the manifest as a `dir` entry once extraction succeeds. Record
    the current pin literal to `phase5.recorded_pin_sha` in
-   `.envlite/state` once extraction succeeds — subsequent `up` runs
+   `.cache/envlite/state` once extraction succeeds — subsequent `up` runs
    compare against this to detect a code-level pin bump.
 5. Copy `src/wp-content/plugins/sqlite-database-integration/db.copy` to
    `src/wp-content/db.php` (byte-for-byte). This is the activation step —
@@ -632,7 +632,7 @@ before being overwritten; `--force` answers yes to every such prompt.
   drift-detected on subsequent `up` runs.
 
 Both are removed by `clean`. The `phase5.recorded_pin_sha` entry in
-`.envlite/state` is also removed by `clean` (whole state file is wiped).
+`.cache/envlite/state` is also removed by `clean` (whole state file is wiped).
 
 **Why this is sufficient:** `tests/phpunit/includes/install.php` does
 `require_once ABSPATH . 'wp-settings.php'` *before* issuing any DB
@@ -829,7 +829,7 @@ to throw with the first non-empty stderr line as the cause; the
 existing `envlite_phase_guard()` converts that into
 `envlite up: phase 8: install subprocess: <cause>` + exit 1.
 
-**Inputs:** `src/wp-config.php` (Phase 7), `.envlite/port` (Phase 1),
+**Inputs:** `src/wp-config.php` (Phase 7), `.cache/envlite/port` (Phase 1),
 populated `vendor/` (Phase 4), populated build outputs (Phase 3 —
 `wp-load.php` requires `src/wp-includes/version.php`).
 
@@ -921,13 +921,17 @@ otherwise raise during this invocation. Required for non-interactive
 use (CI, scripts). It is the user's responsibility to know what they're
 forcing.
 
-### envlite state directory (`.envlite/`)
+### envlite state directory (`.cache/envlite/`)
 
-`.envlite/` at the repo root holds envlite's private state.
-wordpress-develop's `.gitignore` lists `/.envlite/`, so envlite's state
-files are ignored out of the box. envlite itself does **not** modify
-`.gitignore`, `.git/info/exclude`, or any other git configuration at
-runtime — the entry is committed to the repo, not written by the tool.
+`.cache/envlite/` at the repo root holds envlite's private state.
+wordpress-develop's `.gitignore` already lists `.cache/*`, so envlite's
+state files are ignored out of the box without a dedicated entry.
+envlite itself does **not** modify `.gitignore`, `.git/info/exclude`,
+or any other git configuration at runtime — the ignore rule is
+committed to the repo, not written by the tool. envlite owns
+`.cache/envlite/` only; the `.cache/` parent is a shared scratch dir
+(used by phpcs and other tools), so `clean` removes `.cache/envlite/`
+and leaves `.cache/` itself in place.
 
 Files inside:
 
@@ -945,7 +949,7 @@ triggers and different contracts:
 - The state file records **inputs envlite observed** when each
   skip-able phase last succeeded — used solely to decide whether the
   next `up` can skip work. Not consulted by `clean` (the file is wiped
-  with the rest of `.envlite/`).
+  with the rest of `.cache/envlite/`).
 
 State entries are written **after** their phase's subprocess exits 0,
 never before. An interrupted phase leaves the previous state value in
@@ -953,7 +957,7 @@ place (or no entry, on first run); the next `up` therefore re-runs
 that phase. False-positive re-runs are acceptable; false-positive
 skips are not.
 
-The `--rebuild` flag causes `up` to read `.envlite/state` as if it
+The `--rebuild` flag causes `up` to read `.cache/envlite/state` as if it
 were empty for that invocation only. Successful phases re-record state
 normally during the same run.
 
@@ -970,7 +974,7 @@ implementation-defined.
 
 **Manifest immutability.** The manifest is envlite-managed. Hand-editing
 it (reordering lines, rewriting hashes) produces undefined behavior on
-the next `up` or `clean`. The same applies to `.envlite/state`: do
+the next `up` or `clean`. The same applies to `.cache/envlite/state`: do
 not hand-edit it; use `--rebuild` to ignore its contents for one
 invocation, or `clean` to wipe it. Users who need to "forget" an
 envlite-owned path should run `envlite clean` and re-run `up`.
@@ -1003,7 +1007,7 @@ durable.
   overwriting.
 
 `clean` walks the manifest in reverse insertion order and (after
-prompting) removes each entry, then removes `.envlite/` itself. Manifest
+prompting) removes each entry, then removes `.cache/envlite/` itself. Manifest
 order is the order envlite wrote things; since users are not supposed
 to edit the manifest, that order is well-defined.
 
@@ -1016,9 +1020,9 @@ After a successful `envlite up`, the repo has:
 **envlite-managed (in manifest, removed by `clean`):**
 
 ```
-.envlite/port                                            (Phase 1)
-.envlite/manifest                                        (all phases)
-.envlite/state                                           (Phases 2/3/4/5 — skip metadata)
+.cache/envlite/port                                            (Phase 1)
+.cache/envlite/manifest                                        (all phases)
+.cache/envlite/state                                           (Phases 2/3/4/5 — skip metadata)
 src/wp-content/plugins/sqlite-database-integration/      (Phase 5)
 src/wp-content/db.php                                    (Phase 5)
 wp-tests-config.php                                      (Phase 6)
@@ -1026,8 +1030,8 @@ src/wp-config.php                                        (Phase 7)
 src/wp-content/database/.ht.sqlite                       (populated by Phase 8; observation-recorded — see below)
 ```
 
-`.envlite/state` is removed by `clean` along with the rest of
-`.envlite/`, but is **not** tracked by the manifest itself — it is
+`.cache/envlite/state` is removed by `clean` along with the rest of
+`.cache/envlite/`, but is **not** tracked by the manifest itself — it is
 operational metadata, not envlite-owned output (see "envlite state
 directory" above).
 
@@ -1061,7 +1065,7 @@ deleting user data.
 **`clean` semantics:** walk the manifest in reverse insertion order,
 present the full list of paths to be removed in a single prompt, then
 delete each entry on confirmation (skipped with `--force`). After the
-batch, remove `.envlite/` itself. Anything **not** in the manifest is
+batch, remove `.cache/envlite/` itself. Anything **not** in the manifest is
 preserved — `clean` never touches `node_modules/`, `vendor/`, build
 artifacts under `src/`, a user-authored plugin checkout under
 `src/wp-content/plugins/`, a hand-rolled `wp-config.php`, or any other
@@ -1135,7 +1139,7 @@ Two parallel mechanisms govern re-run behavior:
    - **Path not in manifest** → user authored this; prompt before
      overwriting. `--force` answers yes.
 
-2. **The `.envlite/state` file** governs subprocess-running phases
+2. **The `.cache/envlite/state` file** governs subprocess-running phases
    (skip eligibility):
    - Recorded input hash matches current input AND output sentinel
      present → skip the phase.
@@ -1149,9 +1153,9 @@ Phase-specific notes:
 |---|---|
 | 0 (preflight) | Always runs. |
 | 1 (port) | Re-uses the cached port if the cache exists and is in `[1, 65535]`. Otherwise re-discovers from the 8100–8899 pool. |
-| 2 (npm ci) | Skips if `node_modules/` exists AND `.envlite/state` records `phase2.input_hash` matching `package-lock.json`. Otherwise spawns `npm ci`; on success, records the current hash. |
+| 2 (npm ci) | Skips if `node_modules/` exists AND `.cache/envlite/state` records `phase2.input_hash` matching `package-lock.json`. Otherwise spawns `npm ci`; on success, records the current hash. |
 | 3 (build:dev) | Skips if Phases 2 and 4 both skipped this run AND `src/wp-includes/version.php` exists AND recorded `phase3.recorded_npm_hash` / `phase3.recorded_composer_hash` match current. `--no-build` forces skip; `--rebuild` forces run. |
-| 4 (composer install) | Skips if `vendor/` exists AND `.envlite/state` records `phase4.input_hash` matching `composer.json`. Otherwise spawns `composer install`; on success, records the current hash. |
+| 4 (composer install) | Skips if `vendor/` exists AND `.cache/envlite/state` records `phase4.input_hash` matching `composer.json`. Otherwise spawns `composer install`; on success, records the current hash. |
 | 5 (SQLite drop-in) | Skips download/extract if the plugin dir is in the manifest, `db.copy` is present, AND `phase5.recorded_pin_sha` matches the current code literal. Always copies `db.copy` → `db.php` (manifest contract governs the write). |
 | 6 (`wp-tests-config.php`) | Manifest contract above. |
 | 7 (`src/wp-config.php`) | Manifest contract above. Re-stamp interpolates the current Phase 1 port. |
@@ -1265,7 +1269,7 @@ deleting outputs pass `--rebuild`.
     the drop-in's default `FQDB`. Same-directory + filename suffix
     beats a separate `database-test/` (no path-resolution surprises
     in the drop-in's `FQDBDIR` machinery) and beats putting it
-    under `.envlite/` (preserves envlite's own-state-only convention
+    under `.cache/envlite/` (preserves envlite's own-state-only convention
     for that directory). The test DB is not observation-tracked
     because the rationale for tracking the live DB — possible
     user-authored content — does not apply to a file phpunit drops
@@ -1313,7 +1317,7 @@ deleting outputs pass `--rebuild`.
     re-runs are acceptable, false-positive skips are not.
 19. **`--rebuild` is distinct from `--force`.** `--force` answers yes
     to file-overwrite prompts (its existing meaning); `--rebuild`
-    discards `.envlite/state` for one invocation and re-runs every
+    discards `.cache/envlite/state` for one invocation and re-runs every
     skip-able phase. Conflating them would make CI's
     prompt-bypass (`--force`) silently incur the full re-run cost on
     every PR build — exactly the slowness the skip rules are designed
@@ -1353,7 +1357,7 @@ deleting outputs pass `--rebuild`.
   dev-tool artifacts: not tracked in the manifest, not removed by
   `clean`. Use `git clean -fdx` or your usual tooling. (Note: envlite
   *does* track its skip metadata about these directories in
-  `.envlite/state`, but the directories themselves remain
+  `.cache/envlite/state`, but the directories themselves remain
   user-owned.)
 - Override Composer's cache or home directory. envlite does not set
   `COMPOSER_HOME`; Composer's default applies.

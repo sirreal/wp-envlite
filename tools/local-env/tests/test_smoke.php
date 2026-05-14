@@ -50,13 +50,13 @@ function test_smoke_phases5_through_7_then_clean() {
     // Now drive clean (force, no TTY).
     $paths = envlite_clean_collect($m);
     envlite_clean_apply($dir, $paths);
-    @unlink("$dir/.envlite/manifest");
-    @unlink("$dir/.envlite/state");
-    @rmdir("$dir/.envlite");
+    @unlink("$dir/.cache/envlite/manifest");
+    @unlink("$dir/.cache/envlite/state");
+    @rmdir("$dir/.cache/envlite");
 
     envlite_assert(!is_file("$dir/wp-tests-config.php"));
     envlite_assert(!is_file("$dir/src/wp-config.php"));
     envlite_assert(!is_file("$dir/src/wp-content/db.php"));
     envlite_assert(!is_dir("$dir/src/wp-content/plugins/sqlite-database-integration"));
-    envlite_assert(!is_dir("$dir/.envlite"));
+    envlite_assert(!is_dir("$dir/.cache/envlite"));
 }
