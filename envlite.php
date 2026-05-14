@@ -154,22 +154,64 @@ function envlite_atomic_write(string $path, string $bytes): string {
 
 /**
  * @param array<string,string> $manifest path => sha256-hex|"dir"
- * @param string|null $currentBytes Null if the file/dir does not exist on disk
- *                                  or is a directory entry whose contents we don't drift-check.
+ * @param bool $existsOnDisk True if anything sits at the path — regular file,
+ *                           symlink (even broken), FIFO, directory.
+ * @param string|null $currentBytes Bytes of a regular file at the path, or null
+ *                                  if the path is empty, a directory entry whose
+ *                                  contents are not drift-checked, OR a
+ *                                  non-regular entry (symlink, FIFO) whose
+ *                                  content we deliberately don't read.
  * @return 'absent'|'owned_clean'|'owned_drifted'|'unowned'
  */
-function envlite_ownership(array $manifest, string $relPath, ?string $currentBytes): string {
+function envlite_ownership(
+    array $manifest,
+    string $relPath,
+    bool $existsOnDisk,
+    ?string $currentBytes
+): string {
     $recorded = $manifest[$relPath] ?? null;
-    if ($currentBytes === null && $recorded === null) { return 'absent'; }
+    if (!$existsOnDisk) {
+        // Nothing on disk. Either absent (caller writes directly) or
+        // owned_clean (manifest claims ownership, user deleted, safe to
+        // recreate without prompting).
+        return $recorded === null ? 'absent' : 'owned_clean';
+    }
+    // Something exists on disk from here on.
     if ($recorded === null) { return 'unowned'; }
     if ($recorded === 'dir') { return 'owned_clean'; }
     if ($currentBytes === null) {
-        // Manifest says envlite owns this path but the file is gone (user
-        // deleted it). Nothing on disk to drift against — safe to recreate
-        // without prompting.
-        return 'owned_clean';
+        // Exists but is not a readable regular file (symlink, broken
+        // symlink, FIFO, directory at a file path). Manifest claims
+        // envlite owns a regular file here; the on-disk entry no longer
+        // matches that contract. Classify as drifted so the user is
+        // prompted before the rename clobbers whatever is there. The
+        // earlier impl returned `owned_clean` for null bytes — that bypass
+        // let an unowned symlink/FIFO get silently overwritten.
+        return 'owned_drifted';
     }
     return hash('sha256', $currentBytes) === $recorded ? 'owned_clean' : 'owned_drifted';
+}
+
+/**
+ * Helper for callers: read regular-file bytes if the path holds one;
+ * return the existence flag and the bytes (null if not readable as a
+ * regular file). Used to drive envlite_ownership() decisions.
+ *
+ * @return array{bool, string|null} [existsOnDisk, regularBytesOrNull]
+ */
+function envlite_path_inspect(string $abs): array {
+    // file_exists follows symlinks (false for broken symlinks); is_link
+    // catches symlinks regardless. The OR catches every "something is here"
+    // case including broken symlinks, FIFOs, dirs, sockets.
+    $exists = file_exists($abs) || is_link($abs);
+    if (!$exists) { return [false, null]; }
+    // is_file follows symlinks. A symlink-to-regular technically passes
+    // is_file, but we intentionally treat any symlink as non-regular here
+    // so the ownership path sees it as drifted and prompts — envlite did
+    // not put a symlink there.
+    if (!is_file($abs) || is_link($abs)) { return [true, null]; }
+    $bytes = @file_get_contents($abs);
+    return [true, $bytes === false ? null : $bytes];
 }
 
 function envlite_format_prompt(
@@ -1135,14 +1177,8 @@ function envlite_phase5_install(
         throw new \RuntimeException("phase 5: cannot read $dbCopy");
     }
     $dbPhpAbs = "$repoRoot/$dbPhpRel";
-    $current = null;
-    if (is_file($dbPhpAbs)) {
-        $current = @file_get_contents($dbPhpAbs);
-        if ($current === false) {
-            throw new \RuntimeException("phase 5: cannot read $dbPhpAbs");
-        }
-    }
-    $ownership = envlite_ownership($manifest, $dbPhpRel, $current);
+    [$exists, $current] = envlite_path_inspect($dbPhpAbs);
+    $ownership = envlite_ownership($manifest, $dbPhpRel, $exists, $current);
     if ($ownership === 'owned_drifted') {
         $rec = $manifest[$dbPhpRel];
         $cur = $current !== null ? hash('sha256', $current) : null;
@@ -1225,14 +1261,8 @@ function envlite_phase6_install(string $repoRoot, bool $force): void {
     $rendered = envlite_phase6_render($sample);
 
     $manifest = envlite_manifest_load($repoRoot);
-    $current  = null;
-    if (is_file($outAbs)) {
-        $current = @file_get_contents($outAbs);
-        if ($current === false) {
-            throw new \RuntimeException("phase 6: cannot read $outAbs");
-        }
-    }
-    $ownership = envlite_ownership($manifest, $outRel, $current);
+    [$exists, $current] = envlite_path_inspect($outAbs);
+    $ownership = envlite_ownership($manifest, $outRel, $exists, $current);
     if ($ownership === 'owned_drifted') {
         $cur = $current !== null ? hash('sha256', $current) : null;
         envlite_prompt_or_abort($force, 'up', 'overwrite drifted file', $outRel, $manifest[$outRel], $cur);
@@ -1344,14 +1374,8 @@ function envlite_phase7_install(string $repoRoot, int $port, bool $force): void 
     $rendered = envlite_phase7_render($sample, $port, $salts);
 
     $manifest = envlite_manifest_load($repoRoot);
-    $current  = null;
-    if (is_file($outAbs)) {
-        $current = @file_get_contents($outAbs);
-        if ($current === false) {
-            throw new \RuntimeException("phase 7: cannot read $outAbs");
-        }
-    }
-    $ownership = envlite_ownership($manifest, $outRel, $current);
+    [$exists, $current] = envlite_path_inspect($outAbs);
+    $ownership = envlite_ownership($manifest, $outRel, $exists, $current);
     if ($ownership === 'owned_drifted') {
         $cur = $current !== null ? hash('sha256', $current) : null;
         envlite_prompt_or_abort($force, 'up', 'overwrite drifted file', $outRel, $manifest[$outRel], $cur);

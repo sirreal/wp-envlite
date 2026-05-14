@@ -1129,13 +1129,29 @@ durable.
 
 **Ownership decisions** (consulted by Phases 5–7):
 
-- Path in manifest **and** current content hash matches → envlite owns
-  it; safe to silently re-stamp.
-- Path in manifest **but** current hash has drifted → envlite created
-  it, the user (or another tool) has modified it; prompt before
-  overwriting (drift prompt includes hash preview).
-- Path **not** in manifest → not envlite-owned; prompt before
-  overwriting.
+- Nothing on disk, no manifest entry → absent; write directly.
+- Nothing on disk, manifest entry present → user deleted it; safe to
+  recreate without prompting.
+- Path on disk is a regular file whose hash matches the manifest →
+  envlite owns it; safe to silently re-stamp.
+- Path on disk is a regular file whose hash has drifted → envlite
+  created it, the user (or another tool) has modified it; prompt
+  before overwriting (drift prompt includes hash preview).
+- Path on disk is **not** a regular file (broken symlink, FIFO, dir
+  where a file should be, symlink-to-anything) → treat as drifted if
+  the manifest claims ownership of a regular file here, otherwise as
+  unowned; either way, prompt before the rename clobbers it.
+  envlite never writes a symlink or a non-regular entry, so finding
+  one at an output path always means external modification.
+- Path on disk, **not** in manifest → not envlite-owned; prompt
+  before overwriting.
+
+Existence is computed as `file_exists($abs) || is_link($abs)` to
+catch broken symlinks (where `file_exists` resolves to false but
+the symlink itself sits in the way). A "regular file" test for the
+content-readability path is `is_file($abs) && !is_link($abs)`:
+symlinks-to-regular pass `is_file` but envlite never writes them,
+so they count as non-regular for ownership.
 
 `clean` walks the manifest in reverse insertion order and (after
 prompting) removes each entry, then removes `.cache/envlite/` itself. Manifest
