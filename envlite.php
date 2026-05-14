@@ -1755,8 +1755,27 @@ function envlite_cmd_clean(array $args, bool $force): int {
         return 2;
     }
     $repoRoot = getcwd();
-    if (!is_dir("$repoRoot/.cache/envlite")) {
+    $stateDir = "$repoRoot/.cache/envlite";
+    // Three states for the state-directory path:
+    //   - nothing there → exit early with "nothing to clean"
+    //   - real directory → normal clean flow below
+    //   - non-directory blocker (regular file, FIFO, symlink-any-flavor):
+    //     clear it so a future `up` can recreate the state directory.
+    //     is_dir alone misses this case (returns false → "nothing to
+    //     clean" success, blocker survives, next `up` cannot mkdir).
+    if (!is_dir($stateDir) && !is_link($stateDir) && !file_exists($stateDir)) {
         envlite_log('clean', 'nothing to clean (no .cache/envlite/ directory)');
+        return 0;
+    }
+    if (!is_dir($stateDir) || is_link($stateDir)) {
+        // Something other than a real directory is at the state path.
+        // The manifest can't exist (it would live inside a directory),
+        // so there's nothing to walk; just clear the blocker and report.
+        if (!@unlink($stateDir)) {
+            envlite_log('clean', "could not remove non-directory at .cache/envlite/");
+            return 1;
+        }
+        envlite_log('clean', 'removed non-directory blocker at .cache/envlite/');
         return 0;
     }
 

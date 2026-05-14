@@ -1217,6 +1217,16 @@ not recurse into the target. Following the symlink would let a
 outside envlite's nominal state directory. Symlinks **inside** the
 state subtree are likewise unlinked rather than recursed into.
 
+`clean` also handles non-real-directory blockers at the state-dir
+path: if `.cache/envlite` is a broken symlink, a symlink to a file,
+or a regular file (left by a failed or external write), the state
+directory is conceptually absent, so the manifest cannot exist —
+there is nothing to walk. `clean` unlinks the blocker and reports
+"removed non-directory blocker at .cache/envlite/" (exit 0). Without
+this step the blocker would survive forever and the next `up` could
+not recreate the state directory because a non-directory entry would
+still sit at that path.
+
 ---
 
 ## Outputs (final repo state)

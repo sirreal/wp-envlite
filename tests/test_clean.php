@@ -172,6 +172,61 @@ function test_observe_ht_sqlite_returns_existing_manifest_when_db_missing() {
     envlite_assert_eq($seed, envlite_observe_ht_sqlite($dir, false));
 }
 
+function test_clean_clears_broken_symlink_at_state_dir_path() {
+    // Round 11 regression: if `.cache/envlite` itself is a broken symlink
+    // (or a regular file, or a symlink to a non-dir), is_dir returns
+    // false. envlite_cmd_clean used to short-circuit with "nothing to
+    // clean" success and leave the blocker in place — the next `up`
+    // then couldn't mkdir `.cache/envlite` because a non-directory was
+    // still sitting at the path.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $repo = envlite_test_tmpdir('clean-broken-state-symlink');
+    mkdir("$repo/.cache");
+    symlink("$repo/.cache/does-not-exist-target", "$repo/.cache/envlite");
+    envlite_assert(is_link("$repo/.cache/envlite"),
+        'fixture must have a broken symlink at the state-dir path');
+    envlite_assert(!is_dir("$repo/.cache/envlite"),
+        'is_dir must return false for the broken symlink');
+
+    $origCwd = getcwd();
+    chdir($repo);
+    try {
+        $rc = envlite_cmd_clean([], true); // force=true to skip prompts
+    } finally {
+        chdir($origCwd);
+    }
+
+    envlite_assert_eq(0, $rc, 'clean must succeed after removing the blocker');
+    envlite_assert(!is_link("$repo/.cache/envlite"),
+        'broken symlink must be unlinked so future up can mkdir the state dir');
+    envlite_assert(!file_exists("$repo/.cache/envlite"),
+        'state path must be empty afterwards');
+}
+
+function test_clean_clears_regular_file_at_state_dir_path() {
+    // Same regression with a different blocker shape — a regular file
+    // accidentally created (or written by a different tool) at
+    // `.cache/envlite`. Without is_link/file_exists checks, clean would
+    // have reported "nothing to clean" and left the file in place.
+    $repo = envlite_test_tmpdir('clean-regular-file-state');
+    mkdir("$repo/.cache");
+    file_put_contents("$repo/.cache/envlite", 'stray file blocking state dir');
+    envlite_assert(file_exists("$repo/.cache/envlite"));
+    envlite_assert(!is_dir("$repo/.cache/envlite"));
+
+    $origCwd = getcwd();
+    chdir($repo);
+    try {
+        $rc = envlite_cmd_clean([], true);
+    } finally {
+        chdir($origCwd);
+    }
+
+    envlite_assert_eq(0, $rc, 'clean must succeed after removing the regular-file blocker');
+    envlite_assert(!file_exists("$repo/.cache/envlite"),
+        'regular-file blocker must be removed by clean');
+}
+
 function test_rrmdir_refuses_to_recurse_into_symlinked_directory() {
     // Round 8 P1 regression: if envlite_rrmdir is invoked on a symlink
     // that points to a real directory, the unguarded scandir would
