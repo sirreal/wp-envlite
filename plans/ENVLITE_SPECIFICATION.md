@@ -1166,7 +1166,7 @@ order is the order envlite wrote things; since users are not supposed
 to edit the manifest, that order is well-defined.
 
 The final `.cache/envlite/` removal is **recursive** (rrmdir, not a
-single `rmdir`). Atomic writes can leave `.tmp` siblings of
+single `rmdir`). Atomic writes can leave temp siblings of
 `manifest`/`state`/`port` behind on an interrupted run, and an
 unconditional rmdir would silently fail against a non-empty directory.
 envlite owns the whole `.cache/envlite/` subtree per the contract above,
@@ -1174,6 +1174,14 @@ so recursive removal is safe. If the recursive removal still leaves the
 directory in place (permission denied, an external process holding a
 file open on Windows), `clean` reports `could not remove
 .cache/envlite/` and exits 1 so the user does not see a false success.
+
+The recursive removal is **symlink-aware at the top level**: if
+`.cache/envlite/` is itself a symlink (e.g., the user redirected it
+to a different filesystem), envlite unlinks the symlink only and does
+not recurse into the target. Following the symlink would let a
+`clean` (especially with `--force`) delete user-owned files entirely
+outside envlite's nominal state directory. Symlinks **inside** the
+state subtree are likewise unlinked rather than recursed into.
 
 ---
 

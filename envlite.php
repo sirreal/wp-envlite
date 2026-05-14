@@ -1750,6 +1750,17 @@ function envlite_clean_apply(string $repoRoot, array $paths): array {
 }
 
 function envlite_rrmdir(string $dir): void {
+    // Refuse to recurse through a symlinked directory at the top level.
+    // If the caller passed a path that is itself a symlink to a directory,
+    // scandir would happily follow it and the foreach below would delete
+    // the target's contents — files entirely outside envlite-owned state.
+    // Unlink the symlink itself instead and leave the target alone.
+    // The recursive descent below already protects against symlinked
+    // sub-entries via the `!is_link($path)` guard.
+    if (is_link($dir)) {
+        @unlink($dir);
+        return;
+    }
     $items = scandir($dir);
     if ($items === false) { return; }
     foreach ($items as $item) {

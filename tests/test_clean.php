@@ -172,6 +172,37 @@ function test_observe_ht_sqlite_returns_existing_manifest_when_db_missing() {
     envlite_assert_eq($seed, envlite_observe_ht_sqlite($dir, false));
 }
 
+function test_rrmdir_refuses_to_recurse_into_symlinked_directory() {
+    // Round 8 P1 regression: if envlite_rrmdir is invoked on a symlink
+    // that points to a real directory, the unguarded scandir would
+    // happily follow the symlink and the recursive descent would delete
+    // the target's contents. A confirmed `envlite clean` against a
+    // `.cache/envlite` symlinked elsewhere would then wipe the user's
+    // own files. The fix: unlink the symlink itself; never recurse.
+    if (DIRECTORY_SEPARATOR !== '/') {
+        return; // POSIX symlink semantics; Windows differs
+    }
+    $sandbox = envlite_test_tmpdir('rrmdir-symlink-target');
+    file_put_contents("$sandbox/USER_DATA", 'must-survive');
+    mkdir("$sandbox/subdir");
+    file_put_contents("$sandbox/subdir/inner", 'must-also-survive');
+
+    $linkDir = envlite_test_tmpdir('rrmdir-symlink-host');
+    rmdir($linkDir); // remove the dir so the symlink can take its place
+    symlink($sandbox, $linkDir);
+
+    envlite_rrmdir($linkDir);
+
+    envlite_assert(!is_link($linkDir),
+        'rrmdir should unlink the symlink itself');
+    envlite_assert(is_dir($sandbox),
+        'rrmdir must not delete the symlink target directory');
+    envlite_assert_eq('must-survive', file_get_contents("$sandbox/USER_DATA"),
+        'rrmdir must not delete files in the symlink target');
+    envlite_assert_eq('must-also-survive', file_get_contents("$sandbox/subdir/inner"),
+        'rrmdir must not recurse through the symlink to delete deeper contents');
+}
+
 function test_clean_apply_reports_paths_that_remain_after_failed_deletion() {
     if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) {
         // Root can delete read-only-parent files; this test needs a
