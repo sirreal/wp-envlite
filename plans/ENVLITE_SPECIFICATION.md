@@ -1137,6 +1137,19 @@ envlite-owned path should run `envlite clean` and re-run `up`.
 (`clean` doesn't touch `node_modules/`, `vendor/`, or build artifacts,
 so the slow-to-rebuild parts survive a clean+`up` cycle.)
 
+**Manifest read failures.** A manifest file that exists on disk but
+cannot be read (permissions stripped, IO error) must NOT be silently
+interpreted as an empty manifest. `up` would then rewrite the manifest
+with only the new entries and lose every prior ownership record;
+`clean --force` would remove `.cache/envlite/` while leaving every
+managed file orphaned (no longer in any manifest, but envlite has
+forgotten it ever wrote them). The loader throws a clear
+"cannot read manifest at <path>" RuntimeException so the caller can
+abort with the documented `envlite <sub>: ...` shape rather than
+quietly losing ownership history. Phases 5–7 surface this throw via
+their `envlite_phase_guard` wrappers; `clean` and the observation
+points catch it explicitly.
+
 **Atomic writes.** Every file envlite writes — whether content
 (`wp-config.php`, `wp-tests-config.php`, etc.) or the manifest itself — uses the
 write-temp + fsync + rename pattern: hash the in-memory bytes

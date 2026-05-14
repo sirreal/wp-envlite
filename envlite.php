@@ -69,8 +69,20 @@ function envlite_manifest_path(string $repoRoot): string {
 function envlite_manifest_load(string $repoRoot): array {
     $path = envlite_manifest_path($repoRoot);
     if (!is_file($path)) { return []; }
+    // Distinguish "manifest does not exist" (empty list, fine) from
+    // "manifest exists but we can't read it" (permission denied, IO
+    // error). The latter must NOT be silently treated as empty: a
+    // following `clean --force` would then wipe `.cache/envlite/`
+    // without removing the previously-managed files (they'd be orphaned
+    // with no record envlite ever wrote them), and a following `up`
+    // would rewrite the manifest with only the new entries, losing the
+    // historical ownership records.
+    $bytes = @file_get_contents($path);
+    if ($bytes === false) {
+        throw new \RuntimeException("cannot read manifest at $path");
+    }
     $entries = [];
-    foreach (explode("\n", file_get_contents($path)) as $line) {
+    foreach (explode("\n", $bytes) as $line) {
         $line = rtrim($line, "\r");
         if ($line === '') { continue; }
         // Two-space delimiter. Hash field is exactly 64 hex chars or the literal "dir".
@@ -1797,7 +1809,18 @@ function envlite_cmd_clean(array $args, bool $force): int {
     // the prompt aborts non-interactively, the on-disk manifest must
     // remain unchanged — otherwise a subsequent `up` would see the DB as
     // envlite-tracked content it never wrote.
-    $manifest = envlite_observe_ht_sqlite($repoRoot, false);
+    //
+    // envlite_manifest_load (called transitively here) throws when the
+    // manifest exists but cannot be read. Surface that as a clean error
+    // rather than letting it escape as an uncaught PHP error — and
+    // refuse to proceed: walking an empty list would orphan every
+    // envlite-managed file the unreadable manifest tracked.
+    try {
+        $manifest = envlite_observe_ht_sqlite($repoRoot, false);
+    } catch (\Throwable $e) {
+        envlite_log('clean', $e->getMessage());
+        return 1;
+    }
     $paths = envlite_clean_collect($manifest);
 
     $failed = [];
