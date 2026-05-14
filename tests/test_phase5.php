@@ -109,6 +109,60 @@ function test_phase5_stage_temp_zip_throws_phase_5_on_unwritable_dir() {
     }
 }
 
+function test_phase5_does_not_skip_when_plugin_path_is_symlink() {
+    // Round 9 P1 regression: a symlink at the plugin path would let the
+    // alreadyInstalled predicate satisfy db.copy "presence" via the
+    // symlink target, and `is_dir($pluginDir)` follows symlinks so the
+    // ownership prompt would not fire either. Even worse, on a yes
+    // prompt or --force, extractTo writes through the symlink target —
+    // potentially modifying files anywhere on disk.
+    //
+    // The fix excludes symlinks from the alreadyInstalled predicate.
+    // Exercise that by setting up a fixture where everything else makes
+    // the skip predicate true (manifest + pin + db.copy via target);
+    // confirm the fetcher is still called because the symlink fails
+    // the predicate.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_make_fixture_repo();
+    $pluginRel = 'src/wp-content/plugins/sqlite-database-integration';
+    $pluginPath = "$dir/$pluginRel";
+
+    // Replace the fixture's real plugin dir with a symlink to an external
+    // target that contains the expected db.copy file. Without the fix,
+    // alreadyInstalled would be true and the fetcher would never run.
+    envlite_rrmdir($pluginPath);
+    $fakeTarget = envlite_test_tmpdir('phase5-symlink-target');
+    file_put_contents("$fakeTarget/db.copy",
+        "<?php // {SQLITE_IMPLEMENTATION_FOLDER_PATH}\n");
+    symlink($fakeTarget, $pluginPath);
+
+    envlite_manifest_save($dir, [$pluginRel => 'dir']);
+    envlite_state_save($dir, [
+        'phase5.recorded_pin_sha' => ENVLITE_SQLITE_PLUGIN_SHA256,
+    ]);
+
+    $fetcherCalled = false;
+    try {
+        envlite_phase5_install($dir, true, false,
+            static function () use (&$fetcherCalled): string {
+                $fetcherCalled = true;
+                throw new \RuntimeException('fetcher invoked — symlink correctly rejected the skip');
+            });
+    } catch (\RuntimeException $e) {
+        // expected — fetcher's throw propagates
+    }
+    envlite_assert($fetcherCalled,
+        'phase 5 must not skip when plugin path is a symlink — fetcher must run');
+
+    // The symlink survives a pre-extract failure (consistent with the
+    // round-4 contract: pre-extract failures leave on-disk state
+    // unchanged so an offline re-run can recover).
+    envlite_assert(is_link($pluginPath),
+        'symlink must remain after pre-extract fetcher failure');
+    envlite_assert(file_exists($fakeTarget),
+        'symlink target must not be deleted by phase 5 on pre-extract failure');
+}
+
 function test_phase5_install_preserves_pin_when_fetcher_throws_pre_extract() {
     // Pre-extract failures (offline HTTP, SHA mismatch, bad zip) must not
     // clear `phase5.recorded_pin_sha`. The existing plugin tree on disk

@@ -667,7 +667,8 @@ All file writes in this phase follow the standard prompt rule (see
 "Destructive operations and prompts"): an unowned destination prompts
 before being overwritten; `--force` answers yes to every such prompt.
 
-1. If `src/wp-content/plugins/sqlite-database-integration/` is recorded
+1. If `src/wp-content/plugins/sqlite-database-integration/` is a **real
+   directory** (`is_dir($pluginDir) && !is_link($pluginDir)`) recorded
    in the manifest (envlite-owned `dir` entry) **and** its `db.copy` is
    present locally **and** `.cache/envlite/state` records a
    `phase5.recorded_pin_sha` matching the literal
@@ -675,9 +676,15 @@ before being overwritten; `--force` answers yes to every such prompt.
    proceed to step 5. The pinned plugin tree from a prior `up` is
    reusable as-is; there is no value in re-downloading it.
 
-   Otherwise (no manifest entry, `db.copy` missing, or recorded pin
-   SHA differs from the current code literal) proceed to step 2.
-   `--rebuild` also forces re-entry into steps 2–4 unconditionally.
+   A symlink at the plugin path **never** satisfies this predicate —
+   envlite never writes a symlink, so finding one always means external
+   modification, and trusting it would let `db.copy` resolve via the
+   symlink target (possibly anywhere outside the checkout).
+
+   Otherwise (no manifest entry, `db.copy` missing, recorded pin SHA
+   differs from the current code literal, or a symlink at the plugin
+   path) proceed to step 2. `--rebuild` also forces re-entry into
+   steps 2–4 unconditionally.
 2. Download the plugin zip via PHP HTTP (`file_get_contents` with a
    stream context that follows redirects, sets a User-Agent, and
    times out at 30 s) from a versioned wordpress.org URL of the form
@@ -709,7 +716,15 @@ before being overwritten; `--force` answers yes to every such prompt.
    `.cache/envlite/state` once extraction succeeds — subsequent `up` runs
    compare against this to detect a code-level pin bump.
 
-   Immediately before invoking `ZipArchive::extractTo`, drop any
+   Immediately before invoking `ZipArchive::extractTo`, **unlink any
+   symlink at the plugin path** (the ownership prompt above has
+   authorized this when needed). Without that step, `extractTo` would
+   write through the symlink target rather than creating a real
+   directory at the plugin path — potentially modifying files anywhere
+   on disk reachable via the link. Unlinking removes the symlink only;
+   POSIX semantics never touch the target.
+
+   Also immediately before `ZipArchive::extractTo`, drop any
    pre-existing `phase5.recorded_pin_sha` entry from state.
    `extractTo` recreates `db.copy` early in the zip stream, so a
    mid-extraction failure can leave the step-1 skip predicate

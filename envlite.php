@@ -1138,18 +1138,29 @@ function envlite_phase5_install(
     $manifest  = envlite_manifest_load($repoRoot);
     $state     = envlite_state_load($repoRoot);
 
-    // Step 1: skip download/extract if (a) plugin dir is in the manifest,
-    // (b) db.copy is present, AND (c) the recorded pin SHA matches the
-    // current code literal. --rebuild bypasses the skip.
+    // Step 1: skip download/extract if (a) plugin dir is a REAL directory
+    // (not a symlink) in the manifest, (b) db.copy is present, AND (c) the
+    // recorded pin SHA matches the current code literal. --rebuild
+    // bypasses the skip. A symlink at the plugin path is always drift —
+    // envlite never writes a symlink — so the skip predicate must not
+    // trust it even when the manifest claims ownership and db.copy
+    // "exists" through the symlink target.
+    $pluginIsLink = is_link($pluginDir);
     $pinMatches = ($state['phase5.recorded_pin_sha'] ?? null) === ENVLITE_SQLITE_PLUGIN_SHA256;
     $alreadyInstalled = !$rebuild
+        && !$pluginIsLink
         && isset($manifest[$pluginRel])
         && $manifest[$pluginRel] === 'dir'
         && is_file($dbCopy)
         && $pinMatches;
     if (!$alreadyInstalled) {
         // Steps 2-4: prompt if dest exists and is not envlite-owned.
-        if (is_dir($pluginDir) && !isset($manifest[$pluginRel])) {
+        // Real-directory-not-in-manifest is a user-installed plugin. A
+        // symlink (any flavor) is always external, regardless of whether
+        // the manifest mentions it — envlite never writes one.
+        $needsPrompt = $pluginIsLink
+            || (is_dir($pluginDir) && !$pluginIsLink && !isset($manifest[$pluginRel]));
+        if ($needsPrompt) {
             envlite_prompt_or_abort($force, 'up', 'overwrite plugin tree', $pluginRel, null, null);
         }
         $bytes = $fetcher();
@@ -1169,6 +1180,17 @@ function envlite_phase5_install(
             // download), forcing every subsequent `up` to re-fetch.
             envlite_phase5_drop_recorded_pin($repoRoot);
             unset($state['phase5.recorded_pin_sha']);
+            // Unlink any symlink at the plugin path BEFORE extractTo runs.
+            // The prompt above has authorized the overwrite; if we leave
+            // the symlink in place, extractTo writes through it into the
+            // target — which could be anywhere outside the checkout.
+            // Unlinking removes only the symlink itself (POSIX semantics),
+            // never the target, so the user's symlinked content is left
+            // intact at its real location. extractTo then creates a real
+            // directory at the plugin path.
+            if ($pluginIsLink) {
+                @unlink($pluginDir);
+            }
             // extractTo returns false on partial/failed extraction (permissions,
             // disk full, malformed entries). Recording the directory as
             // envlite-owned in that case would let a later run satisfy the
