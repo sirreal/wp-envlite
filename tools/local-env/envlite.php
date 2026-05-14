@@ -484,7 +484,13 @@ function envlite_phase0_tool_version(array $cmd): ?array {
 }
 
 function envlite_phase0_required_extensions(): array {
-    $exts = ['pdo_sqlite', 'sqlite3', 'openssl', 'simplexml', 'zip'];
+    // `gd` is required by the WordPress core test bootstrap:
+    // phpunit.xml.dist sets WP_RUN_CORE_TESTS=1, which makes
+    // tests/phpunit/includes/bootstrap.php abort if `gd` is missing
+    // before any group filter applies. Checking it at preflight stops
+    // envlite from claiming success while `phpunit --group html-api`
+    // still fails downstream.
+    $exts = ['gd', 'pdo_sqlite', 'sqlite3', 'openssl', 'simplexml', 'zip'];
     if (PHP_OS_FAMILY !== 'Windows') {
         // pcntl is required on Unix so envlite_run_dev_server can call
         // pcntl_exec into php -S. Windows lacks pcntl entirely; the

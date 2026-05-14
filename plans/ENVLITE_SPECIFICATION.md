@@ -15,8 +15,8 @@ charter.
 **Tech stack:**
 
 - host PHP ≥ 7.4 (matching WordPress's own supported floor), with
-  `pdo_sqlite`, `sqlite3`, `openssl`, `simplexml`, `zip`, and `hash`
-  extensions loaded. On Unix, `pcntl` is also required so
+  `gd`, `pdo_sqlite`, `sqlite3`, `openssl`, `simplexml`, `zip`, and
+  `hash` extensions loaded. On Unix, `pcntl` is also required so
   `envlite up` can call `pcntl_exec` into `php -S`.
   Phase 0 verifies the full set; the brief here just names the
   unavoidable ones.
@@ -264,6 +264,11 @@ assumptions. Cheap to run and informative on failure.
    is the authoritative check.
 3. The following PHP extensions are loaded
    (`extension_loaded(...)` returns true for each):
+   - `gd` — required by the WordPress core test bootstrap. `phpunit.xml.dist`
+     sets `WP_RUN_CORE_TESTS=1`, and `tests/phpunit/includes/bootstrap.php`
+     aborts before any test group filter applies when `gd` is missing.
+     Checking it at preflight stops envlite from claiming success while
+     `phpunit --group html-api` would still fail.
    - `pdo_sqlite`, `sqlite3` — for the SQLite drop-in (Phase 5) and the
      runtime/test database paths.
    - `openssl` — required by PHP's HTTPS stream wrapper (used by

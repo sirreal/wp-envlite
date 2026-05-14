@@ -49,7 +49,9 @@ function test_phase0_required_extensions_include_pcntl_on_unix() {
 }
 
 function test_phase0_required_extensions_includes_existing_set() {
-    foreach (['pdo_sqlite', 'sqlite3', 'openssl', 'simplexml', 'zip'] as $ext) {
+    // gd is required by the WP core test bootstrap (phpunit.xml.dist sets
+    // WP_RUN_CORE_TESTS=1), so envlite must surface its absence at preflight.
+    foreach (['gd', 'pdo_sqlite', 'sqlite3', 'openssl', 'simplexml', 'zip'] as $ext) {
         envlite_assert(
             in_array($ext, envlite_phase0_required_extensions(), true),
             "$ext must remain required"
