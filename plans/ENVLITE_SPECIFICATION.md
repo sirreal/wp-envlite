@@ -729,13 +729,17 @@ sample reshape).
 
 Replace the sample's `define( 'WP_PHP_BINARY', 'php' );` line with
 `define( 'WP_PHP_BINARY', <PHP_BINARY> );`, where `<PHP_BINARY>` is the
-single-quoted absolute path of the PHP that is running envlite (PHP's
-own `PHP_BINARY` constant, var_export-escaped). PHPUnit's bootstrap
-shells out to `WP_PHP_BINARY` to run `tests/phpunit/includes/install.php`;
-leaving the sample's bare `'php'` would resolve through `PATH` and could
-pick up a different build than the one envlite preflight-checked
-(different SQLite, missing extensions, wrong version). The substitution
-is anchored on the exact sample literal — a mismatch aborts with
+PHP that is running envlite (the `PHP_BINARY` constant) passed through
+`escapeshellarg()` and then var_export()'d as a PHP literal. PHPUnit's
+bootstrap shells out as `system( WP_PHP_BINARY . ' ' . escapeshellarg(...) )`
+— it escapes the args but not the binary path itself, so a raw value
+breaks when `PHP_BINARY` contains spaces or shell metacharacters
+(Windows `C:\Program Files\PHP\php.exe`). Pre-escaping makes the
+constant a shell-safe single token. Leaving the sample's bare `'php'`
+in place would also resolve through `PATH` and could pick up a
+different build than the one envlite preflight-checked. The
+substitution is anchored on the exact sample literal — a mismatch
+aborts with
 `envlite up: phase 6: WP_PHP_BINARY sample literal not found exactly once; envlite assumption broken`.
 
 Then assert that the substituted bytes do not already contain a

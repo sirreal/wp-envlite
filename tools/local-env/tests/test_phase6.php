@@ -28,7 +28,24 @@ function test_phase6_render_pins_wp_php_binary_to_caller() {
             . "define( 'WP_PHP_BINARY', 'php' );\n";
     $out = envlite_phase6_render($sample, '/opt/php80/bin/php');
     envlite_assert_eq(0, substr_count($out, "define( 'WP_PHP_BINARY', 'php' );"));
-    envlite_assert_eq(1, substr_count($out, "define( 'WP_PHP_BINARY', '/opt/php80/bin/php' );"));
+    // The pinned value is escapeshellarg()'d so it is safe to concatenate
+    // into a shell command unchanged (PHPUnit's bootstrap does exactly that).
+    $expected = "define( 'WP_PHP_BINARY', " . var_export(escapeshellarg('/opt/php80/bin/php'), true) . " );";
+    envlite_assert_eq(1, substr_count($out, $expected));
+}
+
+function test_phase6_render_quotes_php_binary_with_spaces() {
+    // Windows paths like "C:\Program Files\PHP\php.exe" break PHPUnit's
+    // bootstrap, which builds `system( WP_PHP_BINARY . ' ' . ...)` without
+    // escaping WP_PHP_BINARY itself. Rendered value must be a shell-safe
+    // single token even when the path contains spaces.
+    $sample = "define( 'DB_NAME', 'youremptytestdbnamehere' );\n"
+            . "define( 'DB_USER', 'yourusernamehere' );\n"
+            . "define( 'DB_PASSWORD', 'yourpasswordhere' );\n"
+            . "define( 'WP_PHP_BINARY', 'php' );\n";
+    $out = envlite_phase6_render($sample, '/path with spaces/php');
+    $expected = "define( 'WP_PHP_BINARY', " . var_export(escapeshellarg('/path with spaces/php'), true) . " );";
+    envlite_assert_eq(1, substr_count($out, $expected));
 }
 
 function test_phase6_render_throws_when_wp_php_binary_sample_literal_missing() {

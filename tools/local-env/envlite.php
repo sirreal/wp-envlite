@@ -1028,9 +1028,16 @@ function envlite_phase6_render(string $sample, string $phpBinary = PHP_BINARY): 
             "phase 6: WP_PHP_BINARY sample literal not found exactly once; envlite assumption broken"
         );
     }
+    // PHPUnit's bootstrap builds the install command as
+    //   system( WP_PHP_BINARY . ' ' . escapeshellarg($config) . ... )
+    // — it escapes the args but NOT WP_PHP_BINARY. If PHP_BINARY contains
+    // spaces or shell metacharacters (Windows `C:\Program Files\...`),
+    // the shell splits it and `install.php` fails. escapeshellarg here
+    // produces a shell-safe single argument; var_export then escapes
+    // that for embedding as a PHP literal.
     $out = str_replace(
         $samplePhpBinary,
-        "define( 'WP_PHP_BINARY', " . var_export($phpBinary, true) . " );",
+        "define( 'WP_PHP_BINARY', " . var_export(escapeshellarg($phpBinary), true) . " );",
         $out
     );
 
