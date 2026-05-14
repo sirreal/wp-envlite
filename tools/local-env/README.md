@@ -27,8 +27,8 @@ your local content survives.
 
 ## Requirements
 
-- PHP ≥ 7.4 with `pdo_sqlite`, `sqlite3`, `openssl`, `simplexml`, `zip`.
-  On Unix only, also `pcntl`.
+- PHP ≥ 7.4 with `gd`, `pdo_sqlite`, `sqlite3`, `openssl`, `simplexml`,
+  `zip`, and `allow_url_fopen=1`. On Unix only, also `pcntl`.
 - Node ≥ 20.10, npm ≥ 10.2.3.
 - Composer ≥ 2.
 

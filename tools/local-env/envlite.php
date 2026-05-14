@@ -400,9 +400,16 @@ function envlite_drain_two_pipes($pipe1, $pipe2): array {
 }
 
 /** Streaming variant: child stdio inherits the parent's. Used by Phase 3 and the dev-server fallback on Windows. */
-function envlite_proc_stream(array $cmd, ?string $cwd = null): int {
+function envlite_proc_stream(array $cmd, ?string $cwd = null, bool $stdoutToStderr = false): int {
     $cmd = envlite_resolve_cmd($cmd);
-    $proc = @proc_open($cmd, [0 => STDIN, 1 => STDOUT, 2 => STDERR], $pipes, $cwd);
+    // Setup phases (Phase 3 build, Phase 8 install) redirect child stdout
+    // to parent stderr because envlite reserves stdout for tool output
+    // semantics — a caller redirecting stdout from `up --no-serve`
+    // shouldn't capture build noise mixed with anything envlite writes.
+    // The dev-server fallback keeps the natural stdout/stderr split so
+    // `php -S` access logs land where the user expects.
+    $stdout = $stdoutToStderr ? STDERR : STDOUT;
+    $proc = @proc_open($cmd, [0 => STDIN, 1 => $stdout, 2 => STDERR], $pipes, $cwd);
     if (!is_resource($proc)) { return -1; }
     return proc_close($proc);
 }
@@ -515,6 +522,15 @@ function envlite_phase0_run(string $repoRoot): void {
             envlite_log(null, "preflight: required PHP extension missing: $ext");
             exit(3);
         }
+    }
+    // Phase 5 (salts URL) and Phase 5 (plugin zip) fetch over HTTPS via
+    // PHP's URL stream wrappers. allow_url_fopen=0 makes those silently
+    // unavailable, and the failure surfaces only after npm/composer/build
+    // have run. Catch it up front so the user gets a one-line preflight
+    // error instead of a confusing mid-phase abort.
+    if (!filter_var(ini_get('allow_url_fopen'), FILTER_VALIDATE_BOOLEAN)) {
+        envlite_log(null, 'preflight: PHP allow_url_fopen is disabled; required for HTTP fetches in Phase 5');
+        exit(3);
     }
     $tools = [
         ['node',     ['node', '--version'],     [20, 10, 0]],
@@ -824,7 +840,7 @@ function envlite_phase3_build_dev(
     unset($state['phase3.recorded_npm_hash'], $state['phase3.recorded_composer_hash']);
     envlite_state_save($repoRoot, $state);
 
-    $exit = envlite_proc_stream(['npm', 'run', 'build:dev'], $repoRoot);
+    $exit = envlite_proc_stream(['npm', 'run', 'build:dev'], $repoRoot, true);
     if ($exit !== 0) {
         throw new \RuntimeException("phase 3: npm run build:dev failed (exit $exit)");
     }

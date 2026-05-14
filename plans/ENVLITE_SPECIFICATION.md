@@ -291,6 +291,13 @@ assumptions. Cheap to run and informative on failure.
      uses a `proc_open` fallback.
 
    `hash` is non-disable-able since PHP 7.4 and is not checked.
+
+   In addition, Phase 0 verifies `allow_url_fopen=1`. Phase 5 fetches
+   the SQLite plugin zip and Phase 7 fetches WordPress salts via
+   `file_get_contents()` against `https://` URLs; with the directive
+   disabled those calls fail much later, after npm/composer/build have
+   already run. A preflight check makes the failure mode "fix php.ini
+   and re-run" rather than "lose minutes of install work first".
 4. `node`, `npm`, and `composer` are present and meet minimum versions:
    `node` ≥ 20.10, `npm` ≥ 10.2.3, `composer` ≥ 2. The `npm` floor matches
    `package.json`'s `engines.npm` so preflight catches the same constraint
