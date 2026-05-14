@@ -775,7 +775,14 @@ function envlite_phase3_build_dev(
 ): void {
     if ($noBuild) { return; }
 
-    $sentinel    = "$repoRoot/src/wp-includes/version.php";
+    // Sentinel: build:dev produces files under src/wp-includes/js/dist
+    // (Gutenberg copy in --dev mode). The entire src/wp-includes/js path
+    // is gitignored, so a fresh checkout has nothing there; existence is a
+    // reliable proxy for "build:dev has produced output". A tracked source
+    // file (e.g. src/wp-includes/version.php) would not work — it is in
+    // every clean checkout and gives a false positive after the user
+    // removes ignored build artifacts.
+    $sentinel    = "$repoRoot/src/wp-includes/js/dist";
     $npmHash     = envlite_phase2_input_hash($repoRoot);
     $composerHash = envlite_phase4_input_hash($repoRoot);
     $state       = envlite_state_load($repoRoot);
@@ -783,7 +790,7 @@ function envlite_phase3_build_dev(
     $skip = !$rebuild
         && $phase2Skipped
         && $phase4Skipped
-        && is_file($sentinel)
+        && is_dir($sentinel)
         && $npmHash !== null && $composerHash !== null
         && ($state['phase3.recorded_npm_hash'] ?? null)      === $npmHash
         && ($state['phase3.recorded_composer_hash'] ?? null) === $composerHash;
