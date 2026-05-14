@@ -127,10 +127,13 @@ function envlite_state_save(string $repoRoot, array $entries): void {
 
 function envlite_atomic_write(string $path, string $bytes): string {
     $dir = dirname($path);
-    if (!is_dir($dir)) { mkdir($dir, 0755, true); }
+    // @-suppress on mkdir/fopen: failures are handled explicitly below
+    // (fopen returns false → RuntimeException). The default PHP warning
+    // duplicates that surface with less context.
+    if (!is_dir($dir)) { @mkdir($dir, 0755, true); }
     $hash = hash('sha256', $bytes);
     $tmp = $path . '.tmp';
-    $fh = fopen($tmp, 'wb');
+    $fh = @fopen($tmp, 'wb');
     if ($fh === false) { throw new \RuntimeException("cannot open $tmp"); }
     if (fwrite($fh, $bytes) !== strlen($bytes)) {
         fclose($fh); @unlink($tmp);
@@ -1326,7 +1329,16 @@ function envlite_cmd_up(array $args, bool $force): int {
     envlite_phase0_run($repoRoot);
     envlite_observe_ht_sqlite($repoRoot);
 
-    $resolvedPort = envlite_phase1_discover_port($repoRoot, $port);
+    // Phase 1 may write `.cache/envlite/port` and update the manifest, and
+    // envlite_atomic_write throws RuntimeException on a failed temp-file
+    // write or rename (permissions, full disk, read-only checkout). Wrap
+    // the call so those surface as the documented `envlite up: phase 1: ...`
+    // line + exit 1 rather than escaping as an uncaught PHP error.
+    $resolvedPort = 0;
+    $rc = envlite_phase_guard('up', 1, function () use ($repoRoot, $port, &$resolvedPort) {
+        $resolvedPort = envlite_phase1_discover_port($repoRoot, $port);
+    });
+    if ($rc !== 0) { return $rc; }
     fwrite(STDERR, "envlite up: port $resolvedPort\n");
 
     // Phases 2 & 4 in parallel (composer install || npm ci), with skip+record.

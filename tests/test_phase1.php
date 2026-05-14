@@ -62,6 +62,54 @@ function test_phase1_trusts_cached_port_even_when_bound() {
     }
 }
 
+function test_phase1_discover_port_throws_on_unwritable_cache_dir() {
+    // envlite_phase1_discover_port calls envlite_atomic_write to record the
+    // chosen port; if the .cache directory is unwritable, that throws a
+    // RuntimeException. The up-command call site must wrap this in
+    // envlite_phase_guard so the exception surfaces as the documented
+    // `envlite up: phase 1: ...` error rather than escaping uncaught.
+    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) {
+        // Same gating as test_clean_apply_reports_paths_that_remain_after_failed_deletion:
+        // root bypasses permission bits, and Windows file semantics differ.
+        return;
+    }
+    $dir = envlite_test_tmpdir('phase1-readonly-cache');
+    mkdir("$dir/.cache", 0555);
+    try {
+        $thrown = null;
+        try {
+            envlite_phase1_discover_port($dir, null);
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+        envlite_assert($thrown !== null,
+            'expected RuntimeException from atomic_write on unwritable cache dir');
+        envlite_assert($thrown instanceof \RuntimeException,
+            'expected RuntimeException, got: ' . get_class($thrown));
+    } finally {
+        chmod("$dir/.cache", 0755);
+    }
+}
+
+function test_phase_guard_catches_phase1_throw_returns_one() {
+    // Companion to the above: the up-command call site wraps the discover
+    // call in envlite_phase_guard. The guard must catch the
+    // RuntimeException, label it as phase 1, and return 1 — rather than
+    // letting the throw escape envlite_cmd_up as an uncaught PHP error.
+    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) { return; }
+    $dir = envlite_test_tmpdir('phase1-guard');
+    mkdir("$dir/.cache", 0555);
+    try {
+        $rc = envlite_phase_guard('up', 1, function () use ($dir) {
+            envlite_phase1_discover_port($dir, null);
+        });
+        envlite_assert_eq(1, $rc,
+            'phase_guard must return 1 when phase 1 atomic_write throws');
+    } finally {
+        chmod("$dir/.cache", 0755);
+    }
+}
+
 function test_phase1_ignores_cache_when_out_of_range() {
     $dir = envlite_test_tmpdir('phase1-bad-cache');
     mkdir($dir . '/.cache/envlite', 0755, true);
