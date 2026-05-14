@@ -1115,17 +1115,24 @@ so the slow-to-rebuild parts survive a clean+`up` cycle.)
 **Atomic writes.** Every file envlite writes — whether content
 (`wp-config.php`, `wp-tests-config.php`, etc.) or the manifest itself — uses the
 write-temp + fsync + rename pattern: hash the in-memory bytes
-(`hash('sha256', $bytes)`), write them to a sibling `.tmp` path in
-binary mode (`'wb'` or `file_put_contents()`; never PHP's text mode
-`'t'`, which translates `\n` to `\r\n` on Windows and would make the
-on-disk bytes diverge from the hash), fsync, `rename()` over the final
+(`hash('sha256', $bytes)`), write them to a uniquely-named sibling
+path with the pattern `<final-path>.envlite-tmp.<8 hex bytes>` in
+binary exclusive-create mode (`'xb'` → `O_CREAT|O_EXCL`; never
+`'wb'`, which truncates an existing file or follows a symlink before
+any ownership check can run, and never PHP's text mode `'t'`, which
+translates `\n` to `\r\n` on Windows and would make the on-disk
+bytes diverge from the hash), fsync, `rename()` over the final
 path. The manifest entry update uses the already-computed hash and
 happens after the content rename, also atomic-replace. envlite
 **never** calls `hash_file()` on the renamed target to populate the
 manifest — that would race with any subsequent writer. A SIGINT
 mid-operation leaves either fully-pre-write or fully-post-write state
 on disk; no half-written file claims a hash for content that wasn't
-durable.
+durable. Random suffix + `O_EXCL` is a deliberate change from an
+earlier deterministic `<final-path>.tmp` form: that form let a
+pre-existing user file or symlink at the temp path collide with
+envlite's write — `wb` would have truncated it (or followed the
+symlink to truncate its target) before ownership could be evaluated.
 
 **Ownership decisions** (consulted by Phases 5–7):
 

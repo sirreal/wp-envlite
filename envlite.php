@@ -132,9 +132,15 @@ function envlite_atomic_write(string $path, string $bytes): string {
     // duplicates that surface with less context.
     if (!is_dir($dir)) { @mkdir($dir, 0755, true); }
     $hash = hash('sha256', $bytes);
-    $tmp = $path . '.tmp';
-    $fh = @fopen($tmp, 'wb');
-    if ($fh === false) { throw new \RuntimeException("cannot open $tmp"); }
+    // Unique temp name + exclusive-create mode (`xb` → O_EXCL). The old
+    // deterministic `$path.'.tmp'` was a destructive-write footgun: if a
+    // user/tool had a file (or symlink) at that path, `wb` would truncate
+    // it (or follow the symlink to its target and truncate THAT) before
+    // any ownership prompt could run. The temp file sits next to the
+    // destination so the rename below stays on the same filesystem (atomic).
+    $tmp = $path . '.envlite-tmp.' . bin2hex(random_bytes(8));
+    $fh = @fopen($tmp, 'xb');
+    if ($fh === false) { throw new \RuntimeException("cannot create temp file $tmp"); }
     if (fwrite($fh, $bytes) !== strlen($bytes)) {
         fclose($fh); @unlink($tmp);
         throw new \RuntimeException("short write to $tmp");

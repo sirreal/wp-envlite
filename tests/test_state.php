@@ -40,11 +40,14 @@ function test_state_load_ignores_malformed_lines() {
 }
 
 function test_state_save_overwrites_atomically() {
-    // Overwriting an existing state file must leave a valid file (no .tmp
-    // residue, single coherent body).
+    // Overwriting an existing state file must leave a valid file (no
+    // envlite-tmp residue, single coherent body).
     $dir = envlite_test_tmpdir('state-atomic');
     envlite_state_save($dir, ['k' => 'v1']);
     envlite_state_save($dir, ['k' => 'v2', 'k2' => 'v3']);
     envlite_assert_eq(['k' => 'v2', 'k2' => 'v3'], envlite_state_load($dir));
-    envlite_assert(!file_exists("$dir/.cache/envlite/state.tmp"), 'no .tmp residue');
+    $leftovers = glob("$dir/.cache/envlite/state.envlite-tmp.*");
+    envlite_assert_eq([], $leftovers, 'no envlite-tmp residue beside state');
+    envlite_assert(!file_exists("$dir/.cache/envlite/state.tmp"),
+        'no legacy .tmp residue either');
 }
