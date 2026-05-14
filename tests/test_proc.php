@@ -33,6 +33,62 @@ function test_resolve_cmd_preserves_args_and_first_element_type() {
     envlite_assert(is_string($resolved[0]));
 }
 
+function test_cmd_exe_wrap_string_simple_args_no_quoting() {
+    // Simple alnum args with no special chars or whitespace are not quoted;
+    // they appear inside the outer /c quotes verbatim.
+    $out = envlite_cmd_exe_wrap_string(['npm', '--version']);
+    envlite_assert_eq('cmd.exe /d /s /c "npm --version"', $out);
+}
+
+function test_cmd_exe_wrap_string_path_with_spaces_inner_quoted() {
+    // The realistic scenario: nodejs installer's default install path is
+    // `C:\Program Files\nodejs\npm.cmd`. The path-with-spaces argument
+    // must be wrapped in inner double quotes so cmd.exe parses it as one
+    // token after /s strips only the outer pair.
+    $out = envlite_cmd_exe_wrap_string([
+        'C:\\Program Files\\nodejs\\npm.cmd',
+        '--version',
+    ]);
+    envlite_assert_eq(
+        'cmd.exe /d /s /c ""C:\\Program Files\\nodejs\\npm.cmd" --version"',
+        $out
+    );
+}
+
+function test_cmd_exe_wrap_string_escapes_internal_double_quote_by_doubling() {
+    // cmd.exe convention: inside a double-quoted argument, " is escaped
+    // as "" (NOT as \" — that's the MS C runtime convention, which cmd.exe
+    // does not recognize).
+    $out = envlite_cmd_exe_wrap_string(['npm', 'install', 'a"b']);
+    envlite_assert_eq(
+        'cmd.exe /d /s /c "npm install "a""b""',
+        $out
+    );
+}
+
+function test_cmd_exe_wrap_string_escapes_caret_and_percent_with_caret() {
+    // cmd.exe expands %VAR% even inside double quotes. Suppress with ^.
+    // Bare ^ must also be escaped to keep its literal value.
+    $out = envlite_cmd_exe_wrap_string(['echo', 'foo %BAR% ^']);
+    envlite_assert_eq(
+        'cmd.exe /d /s /c "echo "foo ^%BAR^% ^^""',
+        $out
+    );
+}
+
+function test_cmd_exe_wrap_string_does_not_quote_args_without_special_chars() {
+    // The composer install flag `--ignore-platform-req=ext-simplexml` contains
+    // `=` which is a cmd.exe argument separator. Quote it. But pure alphanum
+    // dash forms stay bare.
+    $out = envlite_cmd_exe_wrap_string([
+        'composer', 'install', '--no-interaction', '--ignore-platform-req=ext-simplexml',
+    ]);
+    envlite_assert_eq(
+        'cmd.exe /d /s /c "composer install --no-interaction "--ignore-platform-req=ext-simplexml""',
+        $out
+    );
+}
+
 function test_proc_capture_drains_large_stderr_without_deadlock() {
     // Pipe buffers on Linux are ~64KB. Sequential drain (stdout then
     // stderr) deadlocks when the child writes more than one buffer to

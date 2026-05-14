@@ -327,13 +327,24 @@ assumptions. Cheap to run and informative on failure.
    single `proc_open` call passing the binary as a command **array**
    with its version flag — `['node', '--version']`, `['npm', '--version']`,
    `['composer', '--version']` — and reading stdout. Passing an array
-   (rather than a string) avoids shell invocation entirely; the OS's
-   exec semantics handle binary lookup, including `PATHEXT` resolution
-   on Windows (`node.exe`, `npm.cmd`, `composer.bat`) and `PATH`
-   resolution on Unix. A non-zero exit or a "command not found" failure
-   from `proc_open` means the tool is missing — abort with exit 3 and
-   name the missing tool. A successful spawn whose parsed version
-   string falls below the minimum also aborts with exit 3.
+   (rather than a string) avoids shell invocation entirely on Unix; the
+   OS's exec semantics handle binary lookup, including `PATH` resolution.
+   A non-zero exit or a "command not found" failure from `proc_open`
+   means the tool is missing — abort with exit 3 and name the missing
+   tool. A successful spawn whose parsed version string falls below the
+   minimum also aborts with exit 3.
+
+   On Windows, `npm.cmd` and `composer.bat` are batch scripts, not
+   executables — `CreateProcess` (PHP's array-form `proc_open` substrate)
+   cannot interpret them. envlite resolves the bare name to a full path
+   via `PATH`/`PATHEXT` lookup, then routes `.cmd`/`.bat` results through
+   `cmd.exe /d /s /c "<command line>"` using string-form `proc_open` with
+   `bypass_shell` set. The wrapper builds the inner command line with
+   cmd.exe-native quoting (whitespace and metacharacters get outer
+   double quotes, internal `"` is doubled, `^` and `%` are caret-escaped)
+   so paths with spaces — notably the default `C:\Program Files\nodejs\`
+   install — work without extra setup. PHP's MS C runtime escaping is
+   incompatible with cmd.exe's parsing, so the build is manual.
 
 **Outputs:** none. On failure, exit 3 with the failed check identified.
 

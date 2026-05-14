@@ -341,10 +341,76 @@ function envlite_resolve_cmd(array $cmd): array {
     return $cmd;
 }
 
+/**
+ * Build a `cmd.exe /d /s /c "..."` invocation string for a Windows
+ * batch-script command. Pure formatter — exposed for testing on any
+ * host. Callers pass the result to proc_open with
+ * `['bypass_shell' => true]` in the options array so PHP does not
+ * re-wrap the already-wrapped string.
+ *
+ * Why this exists: array-form proc_open on Windows calls CreateProcess
+ * directly, which can launch executables (.exe) but cannot interpret
+ * batch scripts (.cmd/.bat). The npm/composer shims that ship with
+ * those tools on Windows are batch files, so envlite must route them
+ * through cmd.exe explicitly.
+ *
+ * Escaping: cmd.exe's quoting rules differ from PHP's array-form
+ * escaping (Microsoft C runtime). We build the string ourselves with
+ * cmd.exe-native conventions:
+ *   - args with whitespace or cmd.exe metacharacters are wrapped in
+ *     double quotes
+ *   - inside double quotes, internal `"` is doubled to `""`, `^` and `%`
+ *     are prefixed with `^` (to suppress variable expansion)
+ *   - the whole inner command is wrapped in outer quotes; `/s` strips
+ *     exactly the first and last quote of the line and runs the rest
+ *     literally, which is the only cmd.exe parsing mode predictable
+ *     across multiple inner-quoted arguments.
+ */
+function envlite_cmd_exe_wrap_string(array $cmd): string {
+    $parts = array_map(static function (string $arg): string {
+        if ($arg !== '' && !preg_match('/[\s"<>&|^()%,;=!]/', $arg)) {
+            return $arg;
+        }
+        $escaped = preg_replace('/([\^%])/', '^$1', $arg);
+        $escaped = str_replace('"', '""', $escaped);
+        return '"' . $escaped . '"';
+    }, $cmd);
+    return 'cmd.exe /d /s /c "' . implode(' ', $parts) . '"';
+}
+
+/**
+ * Spawn a subprocess uniformly across platforms. On Windows, a resolved
+ * .cmd/.bat shim is wrapped via cmd.exe with `bypass_shell` set so PHP
+ * doesn't add a second cmd.exe layer. Everywhere else (and for direct
+ * .exe / PHP_BINARY invocations) the array form is passed through to
+ * proc_open unchanged.
+ *
+ * @param array $cmd          executable as the first element, args after
+ * @param array $descriptors  proc_open descriptor spec
+ * @param-out array|null $pipes the proc_open-allocated pipe array
+ * @return resource|false    proc_open return value
+ */
+function envlite_proc_open(array $cmd, array $descriptors, &$pipes, ?string $cwd) {
+    if (PHP_OS_FAMILY !== 'Windows' || !isset($cmd[0]) || !is_string($cmd[0])) {
+        return @proc_open(envlite_resolve_cmd($cmd), $descriptors, $pipes, $cwd);
+    }
+    $cmd[0] = envlite_resolve_windows_command($cmd[0]);
+    if (!preg_match('/\.(cmd|bat)$/i', $cmd[0])) {
+        return @proc_open($cmd, $descriptors, $pipes, $cwd);
+    }
+    return @proc_open(
+        envlite_cmd_exe_wrap_string($cmd),
+        $descriptors,
+        $pipes,
+        $cwd,
+        null,
+        ['bypass_shell' => true]
+    );
+}
+
 /** Capture variant: returns [$exit, $stdout, $stderr]. Used by Phase 0. */
 function envlite_proc_capture(array $cmd, ?string $cwd = null): array {
-    $cmd = envlite_resolve_cmd($cmd);
-    $proc = @proc_open(
+    $proc = envlite_proc_open(
         $cmd,
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
         $pipes,
@@ -405,7 +471,6 @@ function envlite_drain_two_pipes($pipe1, $pipe2): array {
 
 /** Streaming variant: child stdio inherits the parent's. Used by Phase 3 and the dev-server fallback on Windows. */
 function envlite_proc_stream(array $cmd, ?string $cwd = null, bool $stdoutToStderr = false): int {
-    $cmd = envlite_resolve_cmd($cmd);
     // Setup phases (Phase 3 build, Phase 8 install) redirect child stdout
     // to parent stderr because envlite reserves stdout for tool output
     // semantics — a caller redirecting stdout from `up --no-serve`
@@ -413,7 +478,7 @@ function envlite_proc_stream(array $cmd, ?string $cwd = null, bool $stdoutToStde
     // The dev-server fallback keeps the natural stdout/stderr split so
     // `php -S` access logs land where the user expects.
     $stdout = $stdoutToStderr ? STDERR : STDOUT;
-    $proc = @proc_open($cmd, [0 => STDIN, 1 => $stdout, 2 => STDERR], $pipes, $cwd);
+    $proc = envlite_proc_open($cmd, [0 => STDIN, 1 => $stdout, 2 => STDERR], $pipes, $cwd);
     if (!is_resource($proc)) { return -1; }
     return proc_close($proc);
 }
@@ -654,8 +719,8 @@ function envlite_run_parallel_buffered(array $jobs): array {
     $procs = [];
     $streamLabel = []; // (int) stream id => label
     foreach ($jobs as $label => $spec) {
-        $proc = @proc_open(
-            envlite_resolve_cmd($spec['cmd']),
+        $proc = envlite_proc_open(
+            $spec['cmd'],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes,
             $spec['cwd'] ?? null
@@ -1260,7 +1325,7 @@ PHP;
         '__PORT__'      => (string) $port,
     ]);
 
-    $proc = @proc_open(
+    $proc = envlite_proc_open(
         [PHP_BINARY],
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
         $pipes,
