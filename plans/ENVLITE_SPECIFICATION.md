@@ -435,10 +435,15 @@ non-zero if `npm` exits non-zero.
 
 After a successful `npm ci`, envlite records the current hash of
 `package-lock.json` to `phase2.input_hash`. Recording happens **only
-on subprocess exit 0**; an interrupted (Ctrl-C'd) `npm ci` leaves
-`node_modules/` partially populated but no recorded hash, so the next
-`up` re-runs the install. Worst case is one redundant `npm ci`; never
-a false-positive skip.
+on subprocess exit 0**, and any pre-existing `phase2.input_hash` is
+**dropped before** envlite spawns the install — otherwise a mid-run
+failure could leave `node_modules/` (re-created by `npm ci` early)
+paired with the still-matching previous hash, and the next `up` would
+skip a broken install. The invalidate-before-run + record-on-success
+sequence guarantees: an interrupted (Ctrl-C'd) `npm ci` leaves the
+directory partially populated but no recorded hash, so the next `up`
+re-runs the install. Worst case is one redundant `npm ci`; never a
+false-positive skip.
 
 The skip is deliberately blind to the *contents* of `node_modules/`
 once the directory exists. Hashing that tree on every `up` would cost
@@ -504,7 +509,12 @@ exactly which dependency state was current the last time `build:dev`
 succeeded.
 
 After a successful `npm run build:dev`, envlite records both hashes.
-Recording happens only on subprocess exit 0.
+As with Phases 2 and 4, any pre-existing `phase3.recorded_*` entries
+are dropped before the build runs — `build:dev` writes incrementally
+into `src/wp-includes/{js,css,blocks}`, so a partial run can leave
+the sentinel directory in place, and the next `up` would otherwise
+skip Phase 3 against stale recorded hashes. Recording happens only
+on subprocess exit 0.
 
 `--no-build` forces the skip even when the rule would otherwise have
 run the phase. Useful when iterating on PHP-only changes after a
@@ -545,8 +555,10 @@ configured. No lockfile is created.
 3. `--rebuild` was not passed.
 
 After a successful `composer install`, envlite records the current
-hash of `composer.json` to `phase4.input_hash`. Recording happens
-only on exit 0.
+hash of `composer.json` to `phase4.input_hash`. As with Phase 2, any
+pre-existing `phase4.input_hash` is dropped before the install runs
+so a mid-run failure cannot leave a populated `vendor/` paired with
+a still-matching hash. Recording happens only on exit 0.
 
 The skip is blind to the contents of `vendor/` once the directory
 exists, on the same reasoning as Phase 2. Note the absence of a

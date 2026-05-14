@@ -733,6 +733,19 @@ function envlite_phase24_parallel(string $repoRoot, bool $rebuild): array {
         ];
     }
 
+    // Invalidate recorded hashes for any phase we're about to re-run.
+    // `npm ci` / `composer install` create the install directory first
+    // (or leave the previous one in place) and only later finish, so a
+    // mid-run failure can leave node_modules/vendor on disk paired with
+    // the still-matching old hash. The next `up` would then skip the
+    // broken install. Drop the hash up front so a subsequent run with
+    // unchanged inputs re-attempts the install.
+    if (!$phase2Skip || !$phase4Skip) {
+        if (!$phase2Skip) { unset($state['phase2.input_hash']); }
+        if (!$phase4Skip) { unset($state['phase4.input_hash']); }
+        envlite_state_save($repoRoot, $state);
+    }
+
     fwrite(STDERR, "envlite up: installing dependencies\u{2026}\n");
     $results = envlite_run_parallel_buffered($jobs);
 
@@ -801,6 +814,15 @@ function envlite_phase3_build_dev(
         && ($state['phase3.recorded_npm_hash'] ?? null)      === $npmHash
         && ($state['phase3.recorded_composer_hash'] ?? null) === $composerHash;
     if ($skip) { return; }
+
+    // Invalidate recorded hashes before attempting the build. `build:dev`
+    // writes incrementally into src/wp-includes/{js,css,blocks}, so a
+    // partial run can leave the sentinel directory in place. If the
+    // recorded hashes still matched, the next `up` would skip Phase 3
+    // even though the last build attempt failed. Drop them up front;
+    // re-record only on a successful build.
+    unset($state['phase3.recorded_npm_hash'], $state['phase3.recorded_composer_hash']);
+    envlite_state_save($repoRoot, $state);
 
     $exit = envlite_proc_stream(['npm', 'run', 'build:dev'], $repoRoot);
     if ($exit !== 0) {
