@@ -17,7 +17,7 @@ charter.
 - host PHP ≥ 7.4 (matching WordPress's own supported floor), with
   `pdo_sqlite`, `sqlite3`, `openssl`, `simplexml`, `zip`, and `hash`
   extensions loaded. On Unix, `pcntl` is also required so
-  `envlite serve` / `envlite up` can call `pcntl_exec` into `php -S`.
+  `envlite up` can call `pcntl_exec` into `php -S`.
   Phase 0 verifies the full set; the brief here just names the
   unavoidable ones.
 - host `node` ≥ 20.10, `npm` ≥ 10.2.3 (matching `package.json` `engines`).
@@ -31,10 +31,10 @@ performs all file operations, hashing, HTTP fetches, and zip extraction
 through PHP's standard library (`file_get_contents` with stream context,
 `hash_file`, `ZipArchive`, `preg_replace`, `str_replace`, `proc_open`).
 Subprocesses spawned by envlite are limited to `node`/`npm`/`composer`,
-plus the host `php` itself in two places: launching the dev server
-(`envlite serve` / `envlite up`) and running the Phase 8 site install
-(script piped to the subprocess via stdin). On Unix, the dev-server
-launch uses `pcntl_exec` (process replacement) rather than a proper
+plus the host `php` itself in two places: launching the dev server at
+the end of `envlite up` and running the Phase 8 site install (script
+piped to the subprocess via stdin). On Unix, the dev-server launch
+uses `pcntl_exec` (process replacement) rather than a proper
 subprocess; on Windows it is a `proc_open` because `pcntl` is
 unavailable.
 
@@ -46,9 +46,9 @@ unavailable.
 
 envlite is implemented as a PHP script at
 `tools/local-env/envlite.php` in the wordpress-develop checkout, with
-a small router asset at `tools/local-env/router.php` that
-`envlite serve` loads into PHP's built-in dev server. The canonical
-(and only supported) invocation form is:
+a small router asset at `tools/local-env/router.php` that `envlite up`
+loads into PHP's built-in dev server. The canonical (and only
+supported) invocation form is:
 
 ```
 $ php tools/local-env/envlite.php <subcommand> [args...]
@@ -65,34 +65,46 @@ shorthand for the full command line.
 | Subcommand | Purpose |
 |---|---|
 | (no args), `help`, `--help`, `-h` | Print usage and exit 0. |
-| `init` | Run all setup phases. Leaves the repo ready to `serve` and to run tests. |
-| `up` | Run all setup phases, then start the dev server in the foreground. Equivalent to `init` followed by `serve`. |
-| `serve` | Exec the dev server on the discovered/cached port. Foreground; respond to Ctrl-C. |
+| `up` | Run setup phases as needed (see "Skip semantics"), then start the dev server in the foreground. The primary command. |
 | `clean` | Remove envlite-managed files (manifest entries). Does not touch `node_modules/`, `vendor/`, or build artifacts under `src/`. |
 
-`port` is intentionally not a subcommand; the cached port lives at
-`.envlite/port` and is one `cat` away.
+There is no `init`, no `serve`, no `verify`. `up` is what users run.
+The cached port lives at `.envlite/port` and is one `cat` away.
 
 ### Global flags
 
 - `--force` — disable all interactive y/N prompts (see "Destructive
   operations and prompts" below). Honors the prompt-rule's *yes* answer
   for every prompt envlite would otherwise raise during this invocation.
+  Orthogonal to `--rebuild`: `--force` only governs prompts.
 
 ### Subcommand flags
 
-- `init [--port=N] [--no-build]`
+- `up [--port=N] [--no-build] [--no-serve] [--rebuild]`
   - `--port=N` skips Phase 1 discovery and uses the given port. Updates
     `.envlite/port` to N.
-  - `--no-build` skips Phase 3. Useful when iterating on PHP-only changes.
-- `up [--port=N] [--no-build]`
-  - Same flag semantics as `init`. After all phases succeed, `up`
-    re-probes the resolved port and runs `php -S` in the foreground —
-    the same invocation `serve` uses. On Unix, the launch uses
-    `pcntl_exec(PHP_BINARY, …)` so the envlite process is replaced in
-    place by `php -S`; on Windows, `proc_open` is used because `pcntl`
-    is unavailable. See "`envlite serve` runtime" below for details.
-- `serve` (no flags; the cached port is the source of truth)
+  - `--no-build` skips Phase 3 (`npm run build:dev`) even when the skip
+    rule would otherwise have run it. Useful when iterating on PHP-only
+    changes.
+  - `--no-serve` runs every setup phase that's needed and then exits 0
+    without launching the dev server. The CI / automation form. The
+    setup phases are identical to a normal `up` — same skip rules, same
+    state writes — only the trailing `php -S` launch is suppressed.
+  - `--rebuild` discards the `.envlite/state` file's recorded skip
+    state for this invocation only. Every phase runs as if envlite had
+    never observed its inputs before. Successful phases re-record state
+    normally. Use when state is suspect or when validating a fresh
+    install.
+
+  The flags are independent. `--rebuild --no-build` re-runs phases
+  2 and 4 from scratch but skips phase 3. `--no-serve --rebuild` is
+  the CI release-gate validation form.
+
+  After all setup phases succeed (and `--no-serve` was not passed),
+  `up` re-probes the resolved port and runs `php -S` in the
+  foreground. On Unix, the launch replaces the envlite process via
+  `pcntl_exec(PHP_BINARY, …)`; on Windows, `proc_open` is used
+  because `pcntl` is unavailable. See "Dev-server launch" below.
 - `clean` (no flags)
 
 ### How to confirm setup works
@@ -100,19 +112,18 @@ shorthand for the full command line.
 envlite has no `verify` subcommand. `phpunit` is a multi-second
 operation users will run anyway during normal development; wrapping it
 in envlite would just charge that cost on every invocation without
-adding signal. After `init`, two quick checks confirm the env is wired
-up:
+adding signal. After `up` (or `up --no-serve`), two quick checks
+confirm the env is wired up:
 
 ```sh
 ./vendor/bin/phpunit
-envlite serve  &  curl -sI http://127.0.0.1:$(cat .envlite/port)/
+curl -sI http://127.0.0.1:$(cat .envlite/port)/
 ```
 
 Phpunit booting against the SQLite drop-in + a 2xx HTTP status (not a
-3xx redirect to `/wp-admin/install.php`) proves the same thing the old
-`verify` did, with less ceremony. Phase 8 has already run
-`wp_install()`, so the site responds with the homepage on first hit.
-Log in at `/wp-login.php` with `admin` / `password`.
+3xx redirect to `/wp-admin/install.php`) proves the env is sound.
+Phase 8 has already run `wp_install()`, so the site responds with the
+homepage on first hit. Log in at `/wp-login.php` with `admin` / `password`.
 
 ### Exit codes
 
@@ -135,28 +146,46 @@ data-producing subcommand). Every stderr line uses one of two prefixes:
   failures).
 - `envlite <subcommand>: <message>` — once a subcommand is running, all
   errors and warnings carry the subcommand name (e.g.
-  `envlite init: phase 5: SHA256 mismatch on plugin zip`,
-  `envlite serve: failed to bind 127.0.0.1:8421`).
+  `envlite up: phase 5: SHA256 mismatch on plugin zip`,
+  `envlite up: failed to bind 127.0.0.1:8421`).
 
-Phase failures inside `init` use `envlite init: phase N: <cause>`.
+Phase failures inside `up` use `envlite up: phase N: <cause>`.
 Prompts (interactive, on stderr) and the non-TTY abort line both follow
 the `envlite <subcommand>: ...` form. envlite never writes timestamps,
 log levels, or ANSI color codes to stderr — the convention is plain
 single-line messages an aggregator can grep.
 
-### `envlite serve` runtime
+Subprocess output (npm, composer) is **buffered** during the parallel
+install pair: while running, envlite prints a single status line
+`envlite up: installing dependencies…`. On success, no further output
+from the subprocesses is shown. On failure of either or both, envlite
+waits for both to complete, then dumps each captured buffer to stderr
+under labeled separators:
 
-`serve` reads the port from `.envlite/port` and launches
-`php -S 127.0.0.1:<port> -t src tools/local-env/router.php` in the
-foreground.
+```
+--- npm ci ---
+<captured stdout+stderr>
+--- composer install ---
+<captured stdout+stderr>
+```
+
+followed by `envlite up: phase N: <cause>` and exit 1. Phase 3
+(`build:dev`) and any other lone subprocesses stream their output
+directly to envlite's stderr — buffering is reserved for the parallel
+case where interleaving would be unreadable.
+
+### Dev-server launch
+
+After all setup phases succeed (and `--no-serve` was not passed), `up`
+launches `php -S 127.0.0.1:<port> -t src tools/local-env/router.php`
+in the foreground using the resolved port.
 
 On Unix, the launch uses `pcntl_exec(PHP_BINARY, …)`: the envlite PHP
 process is replaced in place by `php -S`, so there is no parent-child
 relay, the PID stays the same, and signals (notably SIGINT from
-Ctrl-C) reach `php -S` directly. The `envlite up` subcommand uses the
-same launch path after its init phases finish.
+Ctrl-C) reach `php -S` directly.
 
-On Windows, `pcntl` is unavailable. `serve` falls back to `proc_open`
+On Windows, `pcntl` is unavailable. envlite falls back to `proc_open`
 with stdio inherited from envlite's own STDIN/STDOUT/STDERR. Behavior
 is functionally equivalent for the user — foreground server, Ctrl-C
 shuts it down — but the process tree shows envlite as the parent of
@@ -177,6 +206,12 @@ concurrent workers cannot corrupt `.ht.sqlite`; the worst case is a
 short serialization wait under contention, which is the same
 behavior a single worker would have produced sequentially.
 
+**`--no-serve` short-circuit.** When `--no-serve` was passed, `up`
+omits the bind probe and the launch entirely; it exits 0 once setup
+phases complete. The port is still discovered/cached and
+`src/wp-config.php` still encodes that port — the only difference is
+that `php -S` is never started.
+
 The router is committed at `tools/local-env/router.php` alongside
 `envlite.php`; it is not installed into the repo, the manifest does
 not track it, and `clean` does not remove it. Its only request-time
@@ -193,16 +228,16 @@ and otherwise `require`s `<DOCUMENT_ROOT>/index.php`. WordPress's
 index.php → wp-blog-header.php → wp-load.php → wp-settings.php
 chain handles the rest, including `wp-admin/install.php` on first
 hit and pretty-permalink fallback once installed. The port is
-consumed only when `serve` runs, never at `init` time.
+consumed only by the dev-server launch at the end of `up`, never
+during the setup phases or under `up --no-serve`.
 
-**Bind failure.** envlite's pre-flight `port_is_free` probe (in both
-`serve` and `up`) detects an already-bound port and exits 1 with a
-single stderr line: `envlite serve: failed to bind 127.0.0.1:<port>`.
-No manifest mutation occurs. If the port becomes bound in the race
-window between the probe and the launch, the Unix path's envlite
-process has already been replaced by the time `php -S` reports the
-failure, so the exit code surfaced to the shell is `php -S`'s, not
-envlite's.
+**Bind failure.** envlite's pre-flight `port_is_free` probe detects an
+already-bound port and exits 1 with a single stderr line:
+`envlite up: failed to bind 127.0.0.1:<port>`. No manifest mutation
+occurs. If the port becomes bound in the race window between the probe
+and the launch, the Unix path's envlite process has already been
+replaced by the time `php -S` reports the failure, so the exit code
+surfaced to the shell is `php -S`'s, not envlite's.
 
 ---
 
@@ -244,11 +279,11 @@ assumptions. Cheap to run and informative on failure.
      would still appear to succeed but `vendor/bin/phpstan` and PHPCS
      ruleset loading would fail at runtime.
    - `zip` — required by `ZipArchive` for Phase 5.
-   - `pcntl` (Unix only) — required so `envlite serve` and
-     `envlite up` can call `pcntl_exec(PHP_BINARY, …)` into the dev
-     server, replacing envlite's PHP process in place. The check is
-     gated on `PHP_OS_FAMILY !== 'Windows'`; Windows PHP has no
-     `pcntl` and uses a `proc_open` fallback.
+   - `pcntl` (Unix only) — required so `envlite up` can call
+     `pcntl_exec(PHP_BINARY, …)` into the dev server, replacing
+     envlite's PHP process in place. The check is gated on
+     `PHP_OS_FAMILY !== 'Windows'`; Windows PHP has no `pcntl` and
+     uses a `proc_open` fallback.
 
    `hash` is non-disable-able since PHP 7.4 and is not checked.
 4. `node`, `npm`, and `composer` are present and meet minimum versions:
@@ -292,7 +327,7 @@ invocations so that bookmarks/links don't rot.
   discovery**. Once cached, envlite trusts the cache and does not
   re-probe (the user may have envlite's own server running on it).
 - Must be picked deterministically from the absolute checkout path so
-  that re-running `envlite init` after `envlite clean` returns the same
+  that re-running `envlite up` after `envlite clean` returns the same
   port whenever possible.
 
 **Cache location:** `.envlite/port`. See "envlite state directory"
@@ -355,20 +390,19 @@ function port_is_free(port):
   canonical absolute path of the checkout; moving the checkout
   re-derives a new port.
 - The probe binds and closes; it does not "reserve" the port. A racy
-  external process could grab the port between Phase 1 and the user
-  starting `envlite serve`, but on a developer laptop this race is
-  negligible. `serve` will surface the bind failure if it happens.
-- `init --port=N` bypasses hash-based discovery but **still probes**:
+  external process could grab the port between Phase 1 and the
+  dev-server launch at the end of `up`, but on a developer laptop
+  this race is negligible. The pre-launch bind probe surfaces the
+  failure if it happens.
+- `up --port=N` bypasses hash-based discovery but **still probes**:
   envlite calls `port_is_free(N)`; if N is currently bound, abort with
   exit 1 and a one-line message naming the port and suggesting
   `lsof -nP -iTCP:N -sTCP:LISTEN` to identify the occupant. Only on a
   successful probe does N get written to the cache. N may be any
   1–65535 — the auto-discovery pool is not enforced on explicit ports,
-  so familiar choices like `8080` or `3000` are honored. The user is
-  then expected to pass a different `--port` if they really want one.
-- There is no `serve --port=N`; the cache is the source of truth. To
-  pick a different port, either run `init --port=N` or delete
-  `.envlite/port` and re-run.
+  so familiar choices like `8080` or `3000` are honored.
+- To pick a different port without specifying one, delete
+  `.envlite/port` and re-run `up`.
 
 **Outputs:** `.envlite/port` (text file, single integer); manifest entry.
 
@@ -379,15 +413,34 @@ function port_is_free(port):
 **Purpose:** install the build toolchain (grunt, webpack, sass, the
 WordPress build scripts).
 
-**Operation:** spawn `npm ci` in the repo root and stream its output to
-the user's terminal. Exit non-zero if `npm` exits non-zero.
+**Operation:** spawn `npm ci` in the repo root. Output is buffered (see
+"Phase ordering and parallelism" — phase 2 runs in parallel with
+phase 4 and the bundled status line replaces direct streaming). Exit
+non-zero if `npm` exits non-zero.
 
 **Inputs:** `package-lock.json` (committed to wordpress-develop).
 **Outputs:** `node_modules/` populated.
 
-**Idempotency:** safe to re-run; `npm ci` itself is idempotent. envlite
-does not gate this phase on `node_modules/` existing — let `npm ci`
-decide whether work is needed.
+**Skip rule:** envlite skips Phase 2 if **all three** are true:
+
+1. `node_modules/` exists on disk.
+2. `.envlite/state` records a `phase2.input_hash` whose value equals
+   `hash_file('sha256', 'package-lock.json')`.
+3. `--rebuild` was not passed.
+
+After a successful `npm ci`, envlite records the current hash of
+`package-lock.json` to `phase2.input_hash`. Recording happens **only
+on subprocess exit 0**; an interrupted (Ctrl-C'd) `npm ci` leaves
+`node_modules/` partially populated but no recorded hash, so the next
+`up` re-runs the install. Worst case is one redundant `npm ci`; never
+a false-positive skip.
+
+The skip is deliberately blind to the *contents* of `node_modules/`
+once the directory exists. Hashing that tree on every `up` would cost
+multiple seconds and defeat the purpose. A user who has manually
+mutated files inside `node_modules/` is out of supported territory
+regardless of envlite. The `rm -rf node_modules/` escape hatch always
+forces a re-install on the next `up`.
 
 **Failure modes:**
 
@@ -407,9 +460,16 @@ committed lockfile.
 and the phpunit bootstrap need.
 
 **Operation:** spawn `npm run build:dev`. This invokes the wordpress-
-develop Gruntfile's `build:dev` target.
+develop Gruntfile's `build:dev` target. Output streams directly to
+envlite's stderr (Phase 3 runs serially after the parallel
+composer/npm pair, so interleaving is not a concern).
 
-**Inputs:** populated `node_modules/`, the sources under `src/`.
+**Inputs:** populated `node_modules/`, populated `vendor/`, the sources
+under `src/`. The dependency on `vendor/` is non-obvious: some
+build-time certificate files used by `build:dev` come out of the
+composer install. Phase 3 must therefore wait for **both** Phase 2 and
+Phase 4 before running.
+
 **Outputs (as defined by upstream Gruntfile):** generated
 `src/wp-includes/version.php`, compiled CSS under `src/wp-includes/css/`,
 compiled blocks under `src/wp-includes/blocks/`, vendored JS, etc. envlite
@@ -420,9 +480,29 @@ does not enumerate these; it trusts the upstream target.
 files (notably `src/wp-includes/version.php`). Without a build, phpunit
 exits with the cryptic message "ABSPATH constant ... non-existent path".
 
-**Idempotency:** `build:dev` is incremental; safe to re-run. The
-`init --no-build` flag exists for users who know their changes do not
-affect build outputs.
+**Skip rule:** envlite skips Phase 3 if **all four** are true:
+
+1. Phase 2 was skipped this run (i.e. `node_modules/` is current).
+2. Phase 4 was skipped this run (i.e. `vendor/` is current).
+3. `src/wp-includes/version.php` exists on disk (sentinel for "build
+   has succeeded at least once").
+4. `.envlite/state` records `phase3.recorded_npm_hash` matching the
+   current `package-lock.json` hash, AND `phase3.recorded_composer_hash`
+   matching the current `composer.json` hash.
+
+The verbose recorded hashes (rather than a single concat hash) are
+deliberately readable: `cat .envlite/state` shows an implementer
+exactly which dependency state was current the last time `build:dev`
+succeeded.
+
+After a successful `npm run build:dev`, envlite records both hashes.
+Recording happens only on subprocess exit 0.
+
+`--no-build` forces the skip even when the rule would otherwise have
+run the phase. Useful when iterating on PHP-only changes after a
+dependency bump that hasn't actually invalidated build outputs.
+`--rebuild` overrides the skip in the other direction: the recorded
+hashes are ignored, and `build:dev` runs unconditionally.
 
 ---
 
@@ -436,6 +516,9 @@ coding standards, PHPStan.
 - `--no-interaction`.
 - `--ignore-platform-req=ext-simplexml`.
 
+Output is buffered (Phase 4 runs in parallel with Phase 2; see "Phase
+ordering and parallelism").
+
 envlite does not set `COMPOSER_HOME`; Composer uses its default
 (`~/.composer` or `~/.config/composer`, per Composer's own resolution).
 Composer's cache layout is Composer's concern, not envlite's.
@@ -445,6 +528,25 @@ Composer's cache layout is Composer's concern, not envlite's.
 resolves fresh.
 **Outputs:** `vendor/`, autoload files, `phpcs` `installed_paths`
 configured. No lockfile is created.
+
+**Skip rule:** mirrors Phase 2, but keyed on `composer.json`:
+
+1. `vendor/` exists on disk.
+2. `.envlite/state` records `phase4.input_hash` matching
+   `hash_file('sha256', 'composer.json')`.
+3. `--rebuild` was not passed.
+
+After a successful `composer install`, envlite records the current
+hash of `composer.json` to `phase4.input_hash`. Recording happens
+only on exit 0.
+
+The skip is blind to the contents of `vendor/` once the directory
+exists, on the same reasoning as Phase 2. Note the absence of a
+lockfile: envlite is not detecting whether the *resolved* set of
+packages would change (composer might pick a newer compatible release
+on a fresh install) — only whether the user has changed `composer.json`
+itself. If a user wants to force composer to re-resolve against
+upstream Packagist, `--rebuild` is the lever, or `rm -rf vendor/`.
 
 **Why `--ignore-platform-req=ext-simplexml`:** the PHPStan/PHPCS
 toolchain in `composer.json` declares `ext-simplexml` in a way that
@@ -473,12 +575,15 @@ before being overwritten; `--force` answers yes to every such prompt.
 
 1. If `src/wp-content/plugins/sqlite-database-integration/` is recorded
    in the manifest (envlite-owned `dir` entry) **and** its `db.copy` is
-   present locally, skip steps 2–4 and proceed to step 5. The pinned
-   plugin tree from a prior `init` is reusable as-is; there is no value
-   in re-downloading it.
+   present locally **and** `.envlite/state` records a
+   `phase5.recorded_pin_sha` matching the literal
+   `ENVLITE_SQLITE_PLUGIN_SHA256` in `envlite.php`, skip steps 2–4 and
+   proceed to step 5. The pinned plugin tree from a prior `up` is
+   reusable as-is; there is no value in re-downloading it.
 
-   Otherwise (no manifest entry, or `db.copy` missing) proceed to
-   step 2.
+   Otherwise (no manifest entry, `db.copy` missing, or recorded pin
+   SHA differs from the current code literal) proceed to step 2.
+   `--rebuild` also forces re-entry into steps 2–4 unconditionally.
 2. Download the plugin zip via PHP HTTP (`file_get_contents` with a
    stream context that follows redirects, sets a User-Agent, and
    times out at 30 s) from
@@ -497,7 +602,10 @@ before being overwritten; `--force` answers yes to every such prompt.
    (a user-installed plugin), prompt before overwriting. `--force`
    bypasses the prompt and the extract proceeds, overlaying envlite's
    pinned tree on top of whatever was there. Record the directory in
-   the manifest as a `dir` entry once extraction succeeds.
+   the manifest as a `dir` entry once extraction succeeds. Record
+   the current pin literal to `phase5.recorded_pin_sha` in
+   `.envlite/state` once extraction succeeds — subsequent `up` runs
+   compare against this to detect a code-level pin bump.
 5. Copy `src/wp-content/plugins/sqlite-database-integration/db.copy` to
    `src/wp-content/db.php` (byte-for-byte). This is the activation step —
    `wp-settings.php` autoloads `wp-content/db.php` when present.
@@ -521,9 +629,10 @@ before being overwritten; `--force` answers yes to every such prompt.
   and the step-6 tripwire is a one-shot install-time check, not ongoing
   drift detection.
 - `src/wp-content/db.php` — recorded as a file entry with content hash;
-  drift-detected on subsequent `init` runs.
+  drift-detected on subsequent `up` runs.
 
-Both are removed by `clean`.
+Both are removed by `clean`. The `phase5.recorded_pin_sha` entry in
+`.envlite/state` is also removed by `clean` (whole state file is wiped).
 
 **Why this is sufficient:** `tests/phpunit/includes/install.php` does
 `require_once ABSPATH . 'wp-settings.php'` *before* issuing any DB
@@ -539,11 +648,14 @@ placeholder string and falls back to
 check fails. The placeholder is a literal that never names a real path,
 so the fallback always activates. Substitution would be dead code.
 
-**Idempotency:** anchored on local presence of
-`src/wp-content/plugins/sqlite-database-integration/db.copy` (step 1).
-A corrupt or partial plugin tree from a prior failed run will fail the
-step-6 tripwire on re-install; the user can resolve by deleting the
-plugin tree and re-running `init`.
+**Idempotency:** anchored on the combination of (a) manifest entry for
+the plugin directory, (b) local presence of `db.copy`, and (c)
+recorded pin SHA matching the code literal. A corrupt or partial
+plugin tree from a prior failed run will fail the step-6 tripwire on
+re-install; the user can resolve by deleting the plugin tree and
+re-running `up`. A code-level pin bump (someone edits
+`ENVLITE_SQLITE_PLUGIN_SHA256` in `envlite.php`) re-triggers the
+download/extract automatically on the next `up`.
 
 ---
 
@@ -570,7 +682,7 @@ sample reshape). Then assert that the substituted bytes do not already
 contain a `DB_FILE` define (regex: `define\s*\(\s*['"]DB_FILE['"]`); a
 match means upstream's `wp-tests-config-sample.php` has grown its own
 `DB_FILE` and envlite's append assumption no longer holds — abort with
-`envlite init: phase 6: DB_FILE already defined in wp-tests-config-sample.php; envlite assumption broken`.
+`envlite up: phase 6: DB_FILE already defined in wp-tests-config-sample.php; envlite assumption broken`.
 Finally, ensure the bytes end in `\n` (append one if not) and append the
 literal line `define( 'DB_FILE', '.ht.test.sqlite' );\n`. Write the
 result to `wp-tests-config.php`. DB_HOST is left as the sample's
@@ -636,7 +748,7 @@ Distinct from Phase 6: `src/wp-config.php` is loaded by `wp-load.php`;
    short timeout (≤ 5 s). If the fetch fails, log a warning and skip
    step 4 — the sample's "put your unique phrase here" placeholders
    remain. Acceptable for a dev box; cookies will not survive across
-   `envlite init` re-runs.
+   `envlite up` re-runs.
 4. If salts were fetched, locate and replace the eight contiguous
    `define()` lines for `AUTH_KEY` through `NONCE_SALT` with the salts
    payload. Use a multi-line regex anchored on the opening `define( 'AUTH_KEY'`
@@ -714,8 +826,8 @@ The script body:
 
 A non-zero subprocess exit causes the parent (`envlite_phase8_install_site`)
 to throw with the first non-empty stderr line as the cause; the
-existing `envlite_init_phase_guard()` converts that into
-`envlite init: phase 8: install subprocess: <cause>` + exit 1.
+existing `envlite_phase_guard()` converts that into
+`envlite up: phase 8: install subprocess: <cause>` + exit 1.
 
 **Inputs:** `src/wp-config.php` (Phase 7), `.envlite/port` (Phase 1),
 populated `vendor/` (Phase 4), populated build outputs (Phase 3 —
@@ -724,7 +836,7 @@ populated `vendor/` (Phase 4), populated build outputs (Phase 3 —
 **Outputs:** DB tables, default options/roles, single admin user
 inside `src/wp-content/database/.ht.sqlite`. The DB file itself is
 not added to the manifest by this phase; envlite's existing
-observation hook records it on the next `init` or `clean`.
+observation hook records it on the next `up` or `clean`.
 
 **Fixed credentials:** the username, email, password, and site title
 above are deliberately not configurable. envlite is a dev-only tool;
@@ -735,10 +847,10 @@ Match the test bootstrap conventions
 **Idempotency:** anchored on `is_blog_installed()`.
 
 - DB tables absent → install.
-- DB tables present (e.g. user already ran `init` once, or wiped
+- DB tables present (e.g. user already ran `up` once, or wiped
   `.ht.sqlite` and re-installed manually) → silent no-op.
 - envlite **never** drops tables. User-authored posts/pages/uploads
-  survive any number of `envlite init` re-runs. The test bootstrap
+  survive any number of `envlite up` re-runs. The test bootstrap
   pattern of "drop everything and re-install" is appropriate for
   CI's clean-slate semantics but wrong for a dev tool.
 
@@ -746,8 +858,8 @@ Match the test bootstrap conventions
 
 | Symptom | Cause | Remediation |
 |---|---|---|
-| phase 8 fails with "version.php" or "ABSPATH" error | `init --no-build` on a fresh checkout | re-run `init` without `--no-build` |
-| phase 8 fails with a DB error | corrupt `.ht.sqlite` from a prior interrupted run | delete `src/wp-content/database/.ht.sqlite`, re-run `init` |
+| phase 8 fails with "version.php" or "ABSPATH" error | `up --no-build` on a fresh checkout where build outputs were missing and the skip rule fired | re-run `up` without `--no-build`, or `up --rebuild` |
+| phase 8 fails with a DB error | corrupt `.ht.sqlite` from a prior interrupted run | delete `src/wp-content/database/.ht.sqlite`, re-run `up` |
 | phase 8 fails with a salt-related notice | rare; salt fetch in Phase 7 left placeholder strings | not a real failure mode; placeholders are accepted |
 
 **`--force` interaction:** none. The phase is non-destructive (it
@@ -823,6 +935,27 @@ Files inside:
 |---|---|---|
 | `port` | Cached site port (Phase 1). | A single integer line. |
 | `manifest` | Records every file/directory envlite has written, with the content hash at the time of writing. | One entry per line: `<sha256>  <relative path>`. The hash is sha256 of the **bytes envlite is about to write**, computed before the temp file is renamed into place — never re-read from disk afterwards. `dir` in the hash field denotes a directory entry. |
+| `state` | Per-phase skip metadata (input hashes, pin SHAs). Read by `up` to decide which phases can be skipped. | One entry per line: `<key>\t<value>\n`. Keys are bare ASCII (`phase2.input_hash`, `phase4.input_hash`, `phase3.recorded_npm_hash`, `phase3.recorded_composer_hash`, `phase5.recorded_pin_sha`). Values are 64-char lowercase hex. Unknown keys are ignored on read; missing expected keys are treated as "phase has never succeeded" → run the phase. |
+
+**State file vs. manifest.** The two files have different write
+triggers and different contracts:
+
+- The manifest records **outputs envlite owns** with their content
+  hashes — drift-detected on every re-run, walked by `clean`.
+- The state file records **inputs envlite observed** when each
+  skip-able phase last succeeded — used solely to decide whether the
+  next `up` can skip work. Not consulted by `clean` (the file is wiped
+  with the rest of `.envlite/`).
+
+State entries are written **after** their phase's subprocess exits 0,
+never before. An interrupted phase leaves the previous state value in
+place (or no entry, on first run); the next `up` therefore re-runs
+that phase. False-positive re-runs are acceptable; false-positive
+skips are not.
+
+The `--rebuild` flag causes `up` to read `.envlite/state` as if it
+were empty for that invocation only. Successful phases re-record state
+normally during the same run.
 
 **Path canonicalization.** Paths in the manifest are stored relative to
 the repo root with `/` (POSIX-style) separators. On Windows,
@@ -837,10 +970,12 @@ implementation-defined.
 
 **Manifest immutability.** The manifest is envlite-managed. Hand-editing
 it (reordering lines, rewriting hashes) produces undefined behavior on
-the next `init` or `clean`. Users who need to "forget" an envlite-owned
-path should run `envlite clean` and re-`init`. (`clean` doesn't touch
-`node_modules/`, `vendor/`, or build artifacts, so the slow-to-rebuild
-parts survive a clean+init cycle.)
+the next `up` or `clean`. The same applies to `.envlite/state`: do
+not hand-edit it; use `--rebuild` to ignore its contents for one
+invocation, or `clean` to wipe it. Users who need to "forget" an
+envlite-owned path should run `envlite clean` and re-run `up`.
+(`clean` doesn't touch `node_modules/`, `vendor/`, or build artifacts,
+so the slow-to-rebuild parts survive a clean+`up` cycle.)
 
 **Atomic writes.** Every file envlite writes — whether content
 (`wp-config.php`, `wp-tests-config.php`, etc.) or the manifest itself — uses the
@@ -876,13 +1011,14 @@ to edit the manifest, that order is well-defined.
 
 ## Outputs (final repo state)
 
-After a successful `envlite init`, the repo has:
+After a successful `envlite up`, the repo has:
 
 **envlite-managed (in manifest, removed by `clean`):**
 
 ```
 .envlite/port                                            (Phase 1)
 .envlite/manifest                                        (all phases)
+.envlite/state                                           (Phases 2/3/4/5 — skip metadata)
 src/wp-content/plugins/sqlite-database-integration/      (Phase 5)
 src/wp-content/db.php                                    (Phase 5)
 wp-tests-config.php                                      (Phase 6)
@@ -890,7 +1026,12 @@ src/wp-config.php                                        (Phase 7)
 src/wp-content/database/.ht.sqlite                       (populated by Phase 8; observation-recorded — see below)
 ```
 
-**Side effects of `init` (not envlite-managed; remove with your usual tooling):**
+`.envlite/state` is removed by `clean` along with the rest of
+`.envlite/`, but is **not** tracked by the manifest itself — it is
+operational metadata, not envlite-owned output (see "envlite state
+directory" above).
+
+**Side effects of `up` (not envlite-managed; remove with your usual tooling):**
 
 ```
 node_modules/                                            (Phase 2 — `npm ci`)
@@ -901,20 +1042,21 @@ src/wp-content/database/.ht.test.sqlite                  (created on first phpun
 
 `.ht.sqlite` is created by the SQLite drop-in the first time
 WordPress is loaded — Phase 8 is now that first load, so the file
-exists by the time `init` returns. The file may hold user-authored
-content (posts, settings, uploads).
+exists by the time `up` returns (or, with `--no-serve`, by the time
+the setup phases complete). The file may hold user-authored content
+(posts, settings, uploads).
 
-**Observation point:** at the start of every `init` and every `clean`,
+**Observation point:** at the start of every `up` and every `clean`,
 envlite checks whether `src/wp-content/database/.ht.sqlite` exists on
 disk and is not yet in the manifest; if so, envlite adds an entry
-recording the file's hash at that moment. The `init` recording
-persists in the manifest as ongoing ownership. The `clean` recording is
+recording the file's hash at that moment. The `up` recording persists
+in the manifest as ongoing ownership. The `clean` recording is
 transient — it exists only so the file appears in *this* invocation's
 removal prompt; the manifest is wiped at the end of `clean` regardless.
-Either way the guarantee is the same: a `clean` invoked after `serve`
-(without an intervening `init`) treats the DB as envlite-tracked
-content and prompts before removing it, rather than silently leaving an
-orphan or silently deleting user data.
+Either way the guarantee is the same: a `clean` invoked after a prior
+`up` treats the DB as envlite-tracked content and prompts before
+removing it, rather than silently leaving an orphan or silently
+deleting user data.
 
 **`clean` semantics:** walk the manifest in reverse insertion order,
 present the full list of paths to be removed in a single prompt, then
@@ -935,6 +1077,10 @@ Strict dependency graph:
 - Phase 0 → all subsequent phases.
 - Phase 1 → Phase 7 (port is consumed by `WP_HOME`, `WP_SITEURL`).
 - Phase 2 → Phase 3 (`build:dev` needs `node_modules/`).
+- Phase 4 → Phase 3 (`build:dev` consumes certificate files installed
+  by `composer install`; not obvious from the Gruntfile, but observed
+  empirically — running `build:dev` before `composer install` fails on
+  a fresh checkout).
 - Phase 5 → Phase 6 and Phase 5 → Phase 7. Both config files assume
   the SQLite drop-in is the active DB layer at any moment between
   phases. Violating either edge (running 6 or 7 first) is harmless to
@@ -948,31 +1094,54 @@ Strict dependency graph:
   must be active).
 - Phase 7 → Phase 8 (Phase 8 loads `src/wp-config.php`).
 
-Phases 1, 2, 4, 5, 6 are mutually independent and could be run in
-parallel. envlite v1 runs them serially: the wall-time savings (~5 s)
-are not worth the output-interleaving and error-handling complexity in
-the initial implementation. A future revision may parallelize. Phase
-8 must always run last in `init` — it has the most predecessors.
+**Concrete schedule:** envlite runs Phases 2 and 4 **in parallel**
+(they are mutually independent), waits for both, then runs Phase 3
+serially. The shape is `composer install & npm ci & wait; npm run
+build:dev`. Phases 5, 6, 7 run serially after that (they're cheap and
+their config-file dependencies are easier to reason about in
+sequence). Phase 8 is always last.
 
-`up` runs the same Phase 0–8 sequence as `init`, then performs the same
-bind-probe + foreground `php -S` invocation as `serve`. It introduces no
-new phases.
+The parallel phase 2/4 launch is what motivates the buffered output
+contract: with two long-running subprocesses streaming to the same
+terminal, raw stdio interleaving would be unreadable. envlite captures
+each subprocess's combined stdout+stderr to a per-process buffer,
+prints a single status line `envlite up: installing dependencies…`
+while they run, and on success discards the buffers without printing
+them. On failure of either or both, envlite waits for both to
+complete (no kill-the-partner machinery), then dumps both buffers to
+stderr under labeled separators (`--- npm ci ---`, `--- composer
+install ---`) before reporting the phase failure and exiting 1. Phase
+3 streams its output directly to envlite's stderr in the normal
+serial fashion.
+
+The wall-time savings of parallel 2/4 vs. serial run are
+substantial on a fresh checkout (~10–30 s); on a re-run where both
+phases skip, the parallel launch costs nothing.
 
 ---
 
 ## Idempotency rules (summary)
 
-All file-producing phases consult the manifest. The contract is uniform:
+Two parallel mechanisms govern re-run behavior:
 
-- **Path absent** → write, record in manifest with content hash.
-- **Path in manifest, content hash matches** → silent re-stamp;
-  envlite owns this file and is updating its own output. Picks up any
-  upstream sample changes for free.
-- **Path in manifest, content hash drifted** → user (or another tool)
-  has modified envlite's output; prompt before overwriting.
-  `--force` answers yes.
-- **Path not in manifest** → user authored this; prompt before
-  overwriting. `--force` answers yes.
+1. **The manifest** governs file-producing phases (output ownership):
+   - **Path absent** → write, record in manifest with content hash.
+   - **Path in manifest, content hash matches** → silent re-stamp;
+     envlite owns this file and is updating its own output. Picks up
+     any upstream sample changes for free.
+   - **Path in manifest, content hash drifted** → user (or another
+     tool) has modified envlite's output; prompt before overwriting.
+     `--force` answers yes.
+   - **Path not in manifest** → user authored this; prompt before
+     overwriting. `--force` answers yes.
+
+2. **The `.envlite/state` file** governs subprocess-running phases
+   (skip eligibility):
+   - Recorded input hash matches current input AND output sentinel
+     present → skip the phase.
+   - Recorded hash differs, sentinel missing, or no recorded value →
+     run the phase. On exit 0, record the new hash.
+   - `--rebuild` ignores recorded values for one invocation.
 
 Phase-specific notes:
 
@@ -980,18 +1149,20 @@ Phase-specific notes:
 |---|---|
 | 0 (preflight) | Always runs. |
 | 1 (port) | Re-uses the cached port if the cache exists and is in `[1, 65535]`. Otherwise re-discovers from the 8100–8899 pool. |
-| 2 (npm ci) | Always spawns `npm ci`; npm decides whether work is needed. |
-| 3 (build:dev) | Always spawns `build:dev` unless `--no-build`. |
-| 4 (composer install) | Always spawns `composer install`; the operation is idempotent. |
-| 5 (SQLite drop-in) | Skips download if the local plugin's `db.copy` is present; copies `db.copy` → `db.php` either way. |
+| 2 (npm ci) | Skips if `node_modules/` exists AND `.envlite/state` records `phase2.input_hash` matching `package-lock.json`. Otherwise spawns `npm ci`; on success, records the current hash. |
+| 3 (build:dev) | Skips if Phases 2 and 4 both skipped this run AND `src/wp-includes/version.php` exists AND recorded `phase3.recorded_npm_hash` / `phase3.recorded_composer_hash` match current. `--no-build` forces skip; `--rebuild` forces run. |
+| 4 (composer install) | Skips if `vendor/` exists AND `.envlite/state` records `phase4.input_hash` matching `composer.json`. Otherwise spawns `composer install`; on success, records the current hash. |
+| 5 (SQLite drop-in) | Skips download/extract if the plugin dir is in the manifest, `db.copy` is present, AND `phase5.recorded_pin_sha` matches the current code literal. Always copies `db.copy` → `db.php` (manifest contract governs the write). |
 | 6 (`wp-tests-config.php`) | Manifest contract above. |
 | 7 (`src/wp-config.php`) | Manifest contract above. Re-stamp interpolates the current Phase 1 port. |
 | 8 (site install) | Always spawns the install subprocess; the subprocess short-circuits via `is_blog_installed()`. envlite never drops tables. |
 
-`envlite init` is safe to re-run on a half-configured repo: paths
+`envlite up` is safe to re-run on a half-configured repo: paths
 envlite owns get refreshed silently, paths it doesn't own require
-explicit user assent. Users who want a fully clean slate run
-`envlite clean` first.
+explicit user assent, subprocess-running phases skip themselves when
+their inputs are unchanged. Users who want a fully clean slate run
+`envlite clean` first; users who want to redo the work without
+deleting outputs pass `--rebuild`.
 
 ---
 
@@ -1024,8 +1195,7 @@ explicit user assent. Users who want a fully clean slate run
 7. **Port stability over freshness.** Once cached, the port is reused
    unconditionally. The user may have envlite's own server running on
    it; re-probing would falsely report "in use". `envlite clean`
-   forgets the port; `envlite init --port=N` is the in-place
-   re-pick.
+   forgets the port; `envlite up --port=N` is the in-place re-pick.
 8. **PHP-only implementation surface.** All file ops, hashing, HTTP,
    and zip extraction go through PHP standard library. Subprocesses
    are limited to `node`/`npm`/`composer`/`php` — tools envlite already
@@ -1056,7 +1226,7 @@ explicit user assent. Users who want a fully clean slate run
 12. **Phase 8 never drops tables.** The test bootstrap drops and
     re-creates on every run because CI wants clean-slate semantics;
     envlite is a dev tool and the same behavior would silently
-    delete posts/pages/uploads on every `init`. envlite gates on
+    delete posts/pages/uploads on every `up`. envlite gates on
     `is_blog_installed()` and skips if true. Users who want a clean
     slate run `envlite clean` (which prompts for `.ht.sqlite`).
 13. **`127.0.0.1` everywhere, never `localhost`.** `php -S` binds
@@ -1117,6 +1287,45 @@ explicit user assent. Users who want a fully clean slate run
     `tools/local-env/tests/test_router.php` is the regression test;
     it boots `php -S` against a fixture docroot wholly outside the
     router file's tree.
+17. **`up` is the only setup command.** Earlier drafts had `init`
+    (setup, no serve) and `serve` (serve, no setup) alongside `up`
+    (both). Two pain points motivated the consolidation: (a) users
+    were running `init` followed by `up`, paying for the same setup
+    twice on every workflow start; (b) the help text had to explain
+    three commands that did overlapping things. With per-phase skip
+    rules in place, `up` is fast on a current repo (no subprocess
+    re-runs when inputs are unchanged) and `serve` adds nothing — the
+    bind probe + `php -S` launch is already what `up` does at the end.
+    `--no-serve` covers the CI / "set up but don't launch" niche that
+    `init` owned. The simplification removes a subcommand surface and
+    a bullet from the help text without losing capability.
+18. **Skip via input hashes, not directory presence.** The natural
+    cheap check is "if `node_modules/` exists, skip `npm ci`." That
+    rule is wrong after `git pull` updates `package-lock.json` —
+    `node_modules/` is still on disk but its contents are stale, and
+    `up` would silently boot the dev server against the wrong deps.
+    Hashing the lockfile costs ~50 µs per phase; the staleness
+    detection it buys is worth it. Phase 4 mirrors the rule on
+    `composer.json`. Phase 3 keys on both phases plus a sentinel
+    output (`src/wp-includes/version.php`). Phase 5 keys on the SHA
+    pin literal in `envlite.php`. State is recorded only on subprocess
+    exit 0, so an interrupted phase always re-runs — false-positive
+    re-runs are acceptable, false-positive skips are not.
+19. **`--rebuild` is distinct from `--force`.** `--force` answers yes
+    to file-overwrite prompts (its existing meaning); `--rebuild`
+    discards `.envlite/state` for one invocation and re-runs every
+    skip-able phase. Conflating them would make CI's
+    prompt-bypass (`--force`) silently incur the full re-run cost on
+    every PR build — exactly the slowness the skip rules are designed
+    to eliminate.
+20. **Parallel composer ‖ npm with serial build:dev.** Phases 2 and 4
+    are mutually independent and the wall-time savings on a fresh
+    install are substantial. Phase 3 cannot join the parallel pair:
+    `build:dev` consumes certificate files installed by `composer
+    install`, observed empirically. Output buffering with a bundled
+    status line is the readable form of two long-running concurrent
+    subprocesses; on failure, both buffers are dumped under labeled
+    separators (no partner-kill machinery).
 
 ---
 
@@ -1124,8 +1333,8 @@ explicit user assent. Users who want a fully clean slate run
 
 - Allocate ports for *external* tooling (database GUIs, Xdebug, etc.) —
   Phase 1 picks one port for the dev web server only.
-- Start or stop the web server in the background. `envlite serve` runs
-  in the foreground and respects Ctrl-C.
+- Start or stop the web server in the background. `envlite up` runs
+  the dev server in the foreground and respects Ctrl-C.
 - Manage the SQLite database file itself. The drop-in creates
   `src/wp-content/database/.ht.sqlite` when WordPress first loads;
   Phase 8 triggers that load by running `wp_install()`, but envlite
@@ -1140,16 +1349,21 @@ explicit user assent. Users who want a fully clean slate run
   human action.
 - Manage `node_modules/`, `vendor/`, or build artifacts under `src/`.
   envlite invokes `npm ci`, `composer install`, and `npm run build:dev`
-  as a convenience during `init`, but treats their outputs as ordinary
+  as a convenience during `up`, but treats their outputs as ordinary
   dev-tool artifacts: not tracked in the manifest, not removed by
-  `clean`. Use `git clean -fdx` or your usual tooling.
+  `clean`. Use `git clean -fdx` or your usual tooling. (Note: envlite
+  *does* track its skip metadata about these directories in
+  `.envlite/state`, but the directories themselves remain
+  user-owned.)
 - Override Composer's cache or home directory. envlite does not set
   `COMPOSER_HOME`; Composer's default applies.
 - Refresh the pinned SQLite drop-in. There is no `envlite update`
   subcommand. To pick up a newer plugin release, edit the SHA256 pin
-  (and any associated logic) in `tools/local-env/envlite.php`, then
-  run `envlite clean && envlite init`. The pin is intentional: bumping
-  it is a deliberate envlite revision, reviewed and committed
-  alongside any code adjustments the new release requires.
+  (and any associated logic) in `tools/local-env/envlite.php`. The
+  next `envlite up` detects the pin change via
+  `phase5.recorded_pin_sha` and re-downloads automatically; no manual
+  `clean` is required. The pin is intentional: bumping it is a
+  deliberate envlite revision, reviewed and committed alongside any
+  code adjustments the new release requires.
 - Manage worktrees. envlite operates on whatever directory it is
   invoked in.

@@ -9,15 +9,29 @@ function envlite_help_text(): string {
 		Usage:
 		  php tools/local-env/envlite.php <subcommand> [args]
 
-		Subcommands:
-		  init [--port=N] [--no-build]   Run all setup phases.
-		  up   [--port=N] [--no-build]   Run init phases, then start the dev server.
-		  serve                          Run the dev server on the cached port.
-		  clean                          Remove envlite-managed files.
-		  help                           Print this help.
+		Commands:
+		  up [--port=N] [--no-build] [--no-serve] [--rebuild]
+		      Set up the checkout and start the dev server. Installs JS/PHP
+		      deps in parallel, builds, writes config, installs the SQLite
+		      drop-in, runs wp_install() if needed, then launches `php -S`.
+		      Re-runs are cheap — unchanged phases are skipped. After install,
+		      sign in at /wp-login.php with admin / password.
 
-		Global flags:
-		  --force                        Disable interactive prompts.
+		  clean
+		      Remove every file envlite created. Prompts before deleting;
+		      --force skips prompts. Does not touch node_modules/, vendor/,
+		      or build outputs.
+
+		  help, --help, -h
+		      Print this help.
+
+		Flags:
+		  --port=N      Port for the dev server. Default: derived from the
+		                checkout path, cached at .envlite/port.
+		  --no-build    Skip `npm run build:dev` even if inputs changed.
+		  --no-serve    Run setup phases only; don't launch the server.
+		  --rebuild     Re-run every setup phase, ignoring cached state.
+		  --force       Answer 'y' to every prompt. Required in CI.
 
 		TEXT;
 }
@@ -76,6 +90,38 @@ function envlite_manifest_save(string $repoRoot, array $entries): void {
     $dir = dirname($manifestPath);
     if (!is_dir($dir)) { mkdir($dir, 0700, true); }
     envlite_atomic_write($manifestPath, $lines);
+}
+
+function envlite_state_path(string $repoRoot): string {
+    return rtrim(envlite_path_to_posix($repoRoot), '/') . '/.envlite/state';
+}
+
+function envlite_state_load(string $repoRoot): array {
+    $path = envlite_state_path($repoRoot);
+    if (!is_file($path)) { return []; }
+    $entries = [];
+    foreach (explode("\n", file_get_contents($path)) as $line) {
+        $line = rtrim($line, "\r");
+        if ($line === '') { continue; }
+        $tab = strpos($line, "\t");
+        if ($tab === false) { continue; }
+        $key = substr($line, 0, $tab);
+        $value = substr($line, $tab + 1);
+        $entries[$key] = $value;
+    }
+    return $entries;
+}
+
+function envlite_state_save(string $repoRoot, array $entries): void {
+    ksort($entries);
+    $lines = '';
+    foreach ($entries as $key => $value) {
+        $lines .= "$key\t$value\n";
+    }
+    $path = envlite_state_path($repoRoot);
+    $dir = dirname($path);
+    if (!is_dir($dir)) { mkdir($dir, 0700, true); }
+    envlite_atomic_write($path, $lines);
 }
 
 function envlite_atomic_write(string $path, string $bytes): string {
@@ -263,7 +309,7 @@ function envlite_proc_capture(array $cmd, ?string $cwd = null): array {
     return [$exit, $stdout ?: '', $stderr ?: ''];
 }
 
-/** Streaming variant: child stdio inherits the parent's. Used by Phases 2/3/4 and `serve`. */
+/** Streaming variant: child stdio inherits the parent's. Used by Phase 3 and the dev-server fallback on Windows. */
 function envlite_proc_stream(array $cmd, ?string $cwd = null): int {
     $proc = @proc_open($cmd, [0 => STDIN, 1 => STDOUT, 2 => STDERR], $pipes, $cwd);
     if (!is_resource($proc)) { return -1; }
@@ -289,7 +335,7 @@ function envlite_pcntl_exec_available(): bool {
 
 /**
  * Launches the dev server. On Unix, requires pcntl (enforced by Phase 0 at
- * init time and re-checked here for safety) and replaces the current process
+ * up time and re-checked here for safety) and replaces the current process
  * via pcntl_exec — same PID, no parent-child relay. On Windows, falls back
  * to envlite_proc_stream which inherits stdio so SIGINT still reaches the
  * child. Returns only on error or when the Windows-fallback child exits.
@@ -305,9 +351,9 @@ function envlite_run_dev_server(string $repoRoot, int $port): int {
 
     if (PHP_OS_FAMILY !== 'Windows') {
         if (!function_exists('pcntl_exec')) {
-            // Phase 0 enforces pcntl on Unix, but `serve` skips Phase 0 — so a
-            // checkout cached from a different system could land here. The spec
-            // says Unix uses pcntl_exec; do not silently degrade to proc_open.
+            // Phase 0 enforces pcntl on Unix; this defensive check exists so a
+            // PHP build that hides pcntl behind extension config still gets a
+            // clean error rather than degrading to proc_open silently.
             envlite_log(null, 'pcntl extension is required on Unix; reinstall PHP with pcntl');
             return 1;
         }
@@ -415,7 +461,7 @@ function envlite_phase1_discover_port(string $repoRoot, ?int $explicitPort): int
 
     if ($explicitPort !== null) {
         if (!envlite_phase1_port_is_free($explicitPort)) {
-            envlite_log('init', "phase 1: port $explicitPort is in use; try a different --port (e.g. lsof -nP -iTCP:$explicitPort -sTCP:LISTEN)");
+            envlite_log('up', "phase 1: port $explicitPort is in use; try a different --port (e.g. lsof -nP -iTCP:$explicitPort -sTCP:LISTEN)");
             exit(1);
         }
         envlite_phase1_write_cache($repoRoot, $explicitPort);
@@ -438,7 +484,7 @@ function envlite_phase1_discover_port(string $repoRoot, ?int $explicitPort): int
             return $cand;
         }
     }
-    envlite_log('init', 'phase 1: no free port in 8100-8899');
+    envlite_log('up', 'phase 1: no free port in 8100-8899');
     exit(1);
 }
 
@@ -450,31 +496,204 @@ function envlite_phase1_write_cache(string $repoRoot, int $port): void {
     envlite_manifest_save($repoRoot, $manifest);
 }
 
-function envlite_phase2_npm_ci(string $repoRoot): void {
-    $exit = envlite_proc_stream(['npm', 'ci'], $repoRoot);
-    if ($exit !== 0) {
-        envlite_log('init', "phase 2: npm ci failed (exit $exit)");
-        exit(1);
-    }
+function envlite_phase2_input_hash(string $repoRoot): ?string {
+    $path = "$repoRoot/package-lock.json";
+    if (!is_file($path)) { return null; }
+    return hash_file('sha256', $path);
 }
 
-function envlite_phase3_build_dev(string $repoRoot): void {
+function envlite_phase4_input_hash(string $repoRoot): ?string {
+    $path = "$repoRoot/composer.json";
+    if (!is_file($path)) { return null; }
+    return hash_file('sha256', $path);
+}
+
+/**
+ * Run multiple subprocesses concurrently with per-process buffered output.
+ *
+ * @param array<string, array{cmd: array, cwd: ?string}> $jobs label => spec
+ * @return array<string, array{exit: int, output: string}>
+ */
+function envlite_run_parallel_buffered(array $jobs): array {
+    $procs = [];
+    $streamLabel = []; // (int) stream id => label
+    foreach ($jobs as $label => $spec) {
+        $proc = @proc_open(
+            $spec['cmd'],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            $spec['cwd'] ?? null
+        );
+        if (!is_resource($proc)) {
+            foreach ($procs as $p) {
+                @proc_terminate($p['proc']);
+                @proc_close($p['proc']);
+            }
+            throw new \RuntimeException("failed to spawn $label");
+        }
+        fclose($pipes[0]);
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+        $procs[$label] = [
+            'proc'   => $proc,
+            'stdout' => $pipes[1],
+            'stderr' => $pipes[2],
+            'buf'    => '',
+        ];
+        $streamLabel[(int) $pipes[1]] = $label;
+        $streamLabel[(int) $pipes[2]] = $label;
+    }
+
+    while (true) {
+        $read = [];
+        foreach ($procs as $p) {
+            if (is_resource($p['stdout'])) { $read[] = $p['stdout']; }
+            if (is_resource($p['stderr'])) { $read[] = $p['stderr']; }
+        }
+        if (empty($read)) { break; }
+
+        $write = $except = null;
+        $n = @stream_select($read, $write, $except, 1);
+        if ($n === false) { continue; } // EINTR — retry
+        if ($n === 0)     { continue; } // timeout — retry
+
+        foreach ($read as $stream) {
+            $label = $streamLabel[(int) $stream] ?? null;
+            if ($label === null) { continue; }
+            $chunk = fread($stream, 8192);
+            if ($chunk !== false && $chunk !== '') {
+                $procs[$label]['buf'] .= $chunk;
+            }
+            if (feof($stream)) {
+                fclose($stream);
+                if ($procs[$label]['stdout'] === $stream) {
+                    $procs[$label]['stdout'] = null;
+                }
+                if ($procs[$label]['stderr'] === $stream) {
+                    $procs[$label]['stderr'] = null;
+                }
+            }
+        }
+    }
+
+    $result = [];
+    foreach ($procs as $label => $p) {
+        $result[$label] = [
+            'exit'   => proc_close($p['proc']),
+            'output' => $p['buf'],
+        ];
+    }
+    return $result;
+}
+
+/**
+ * Phases 2 and 4 — npm ci and composer install, in parallel.
+ * Returns a record of which phases were skipped this run; the caller
+ * (Phase 3) needs that to decide whether the build:dev sentinel + recorded
+ * hashes are sufficient to skip itself.
+ *
+ * @return array{phase2_skipped: bool, phase4_skipped: bool}
+ */
+function envlite_phase24_parallel(string $repoRoot, bool $rebuild): array {
+    $state = envlite_state_load($repoRoot);
+
+    $npmHash      = envlite_phase2_input_hash($repoRoot);
+    $composerHash = envlite_phase4_input_hash($repoRoot);
+
+    $phase2Skip = !$rebuild
+        && $npmHash !== null
+        && is_dir("$repoRoot/node_modules")
+        && ($state['phase2.input_hash'] ?? null) === $npmHash;
+    $phase4Skip = !$rebuild
+        && $composerHash !== null
+        && is_dir("$repoRoot/vendor")
+        && ($state['phase4.input_hash'] ?? null) === $composerHash;
+
+    if ($phase2Skip && $phase4Skip) {
+        return ['phase2_skipped' => true, 'phase4_skipped' => true];
+    }
+
+    $jobs = [];
+    if (!$phase2Skip) {
+        $jobs['npm ci'] = ['cmd' => ['npm', 'ci'], 'cwd' => $repoRoot];
+    }
+    if (!$phase4Skip) {
+        $jobs['composer install'] = [
+            'cmd' => ['composer', 'install', '--no-interaction', '--ignore-platform-req=ext-simplexml'],
+            'cwd' => $repoRoot,
+        ];
+    }
+
+    fwrite(STDERR, "envlite up: installing dependencies\u{2026}\n");
+    $results = envlite_run_parallel_buffered($jobs);
+
+    $failed = [];
+    foreach ($results as $label => $r) {
+        if ($r['exit'] !== 0) { $failed[$label] = $r; }
+    }
+    if (!empty($failed)) {
+        // Dump only the buffers of failed processes, with labeled separators.
+        foreach ($results as $label => $r) {
+            if (!isset($failed[$label])) { continue; }
+            fwrite(STDERR, "--- $label ---\n");
+            fwrite(STDERR, $r['output']);
+            if ($r['output'] === '' || substr($r['output'], -1) !== "\n") {
+                fwrite(STDERR, "\n");
+            }
+        }
+        if (count($failed) === 1) {
+            $label = array_keys($failed)[0];
+            $phaseN = $label === 'npm ci' ? 2 : 4;
+            $exit = $failed[$label]['exit'];
+            throw new \RuntimeException("phase $phaseN: $label failed (exit $exit)");
+        }
+        throw new \RuntimeException('phases 2 and 4: install subprocesses failed');
+    }
+
+    // Record state for each phase that ran successfully.
+    if (!$phase2Skip) { $state['phase2.input_hash'] = $npmHash; }
+    if (!$phase4Skip) { $state['phase4.input_hash'] = $composerHash; }
+    envlite_state_save($repoRoot, $state);
+
+    return ['phase2_skipped' => $phase2Skip, 'phase4_skipped' => $phase4Skip];
+}
+
+/**
+ * Phase 3 — npm run build:dev, serial after phases 2 & 4.
+ * Skips when both deps phases skipped, sentinel exists, and recorded
+ * hashes still match. `--no-build` forces skip; `--rebuild` forces run.
+ */
+function envlite_phase3_build_dev(
+    string $repoRoot,
+    bool $rebuild,
+    bool $noBuild,
+    bool $phase2Skipped,
+    bool $phase4Skipped
+): void {
+    if ($noBuild) { return; }
+
+    $sentinel    = "$repoRoot/src/wp-includes/version.php";
+    $npmHash     = envlite_phase2_input_hash($repoRoot);
+    $composerHash = envlite_phase4_input_hash($repoRoot);
+    $state       = envlite_state_load($repoRoot);
+
+    $skip = !$rebuild
+        && $phase2Skipped
+        && $phase4Skipped
+        && is_file($sentinel)
+        && $npmHash !== null && $composerHash !== null
+        && ($state['phase3.recorded_npm_hash'] ?? null)      === $npmHash
+        && ($state['phase3.recorded_composer_hash'] ?? null) === $composerHash;
+    if ($skip) { return; }
+
     $exit = envlite_proc_stream(['npm', 'run', 'build:dev'], $repoRoot);
     if ($exit !== 0) {
-        envlite_log('init', "phase 3: npm run build:dev failed (exit $exit)");
-        exit(1);
+        throw new \RuntimeException("phase 3: npm run build:dev failed (exit $exit)");
     }
-}
 
-function envlite_phase4_composer_install(string $repoRoot): void {
-    $exit = envlite_proc_stream(
-        ['composer', 'install', '--no-interaction', '--ignore-platform-req=ext-simplexml'],
-        $repoRoot
-    );
-    if ($exit !== 0) {
-        envlite_log('init', "phase 4: composer install failed (exit $exit)");
-        exit(1);
-    }
+    if ($npmHash !== null)      { $state['phase3.recorded_npm_hash']      = $npmHash; }
+    if ($composerHash !== null) { $state['phase3.recorded_composer_hash'] = $composerHash; }
+    envlite_state_save($repoRoot, $state);
 }
 
 const ENVLITE_SQLITE_PLUGIN_URL = 'https://downloads.wordpress.org/plugin/sqlite-database-integration.zip';
@@ -519,19 +738,27 @@ function envlite_phase5_assert_placeholder(string $dbCopyPath): void {
     }
 }
 
-function envlite_phase5_install(string $repoRoot, bool $force): void {
+function envlite_phase5_install(string $repoRoot, bool $force, bool $rebuild = false): void {
     $pluginDir = "$repoRoot/src/wp-content/plugins/sqlite-database-integration";
     $dbCopy    = "$pluginDir/db.copy";
     $dbPhpRel  = 'src/wp-content/db.php';
     $pluginRel = 'src/wp-content/plugins/sqlite-database-integration';
     $manifest  = envlite_manifest_load($repoRoot);
+    $state     = envlite_state_load($repoRoot);
 
-    // Step 1: skip if already installed (manifest entry + db.copy on disk).
-    $alreadyInstalled = isset($manifest[$pluginRel]) && $manifest[$pluginRel] === 'dir' && is_file($dbCopy);
+    // Step 1: skip download/extract if (a) plugin dir is in the manifest,
+    // (b) db.copy is present, AND (c) the recorded pin SHA matches the
+    // current code literal. --rebuild bypasses the skip.
+    $pinMatches = ($state['phase5.recorded_pin_sha'] ?? null) === ENVLITE_SQLITE_PLUGIN_SHA256;
+    $alreadyInstalled = !$rebuild
+        && isset($manifest[$pluginRel])
+        && $manifest[$pluginRel] === 'dir'
+        && is_file($dbCopy)
+        && $pinMatches;
     if (!$alreadyInstalled) {
         // Steps 2-4: prompt if dest exists and is not envlite-owned.
         if (is_dir($pluginDir) && !isset($manifest[$pluginRel])) {
-            envlite_prompt_or_abort($force, 'init', 'overwrite plugin tree', $pluginRel, null, null);
+            envlite_prompt_or_abort($force, 'up', 'overwrite plugin tree', $pluginRel, null, null);
         }
         $tmpZip = sys_get_temp_dir() . '/envlite-sqlite-' . bin2hex(random_bytes(4)) . '.zip';
         $bytes = envlite_http_get(ENVLITE_SQLITE_PLUGIN_URL);
@@ -557,6 +784,11 @@ function envlite_phase5_install(string $repoRoot, bool $force): void {
         }
         $manifest[$pluginRel] = 'dir';
         envlite_manifest_save($repoRoot, $manifest);
+
+        // Record the pin SHA so a subsequent code-level pin bump
+        // re-triggers download/extract automatically.
+        $state['phase5.recorded_pin_sha'] = ENVLITE_SQLITE_PLUGIN_SHA256;
+        envlite_state_save($repoRoot, $state);
     }
 
     // Step 5: copy db.copy → db.php with manifest contract.
@@ -579,9 +811,9 @@ function envlite_phase5_install(string $repoRoot, bool $force): void {
     if ($ownership === 'owned_drifted') {
         $rec = $manifest[$dbPhpRel];
         $cur = $current !== null ? hash('sha256', $current) : null;
-        envlite_prompt_or_abort($force, 'init', 'overwrite drifted file', $dbPhpRel, $rec, $cur);
+        envlite_prompt_or_abort($force, 'up', 'overwrite drifted file', $dbPhpRel, $rec, $cur);
     } elseif ($ownership === 'unowned') {
-        envlite_prompt_or_abort($force, 'init', 'overwrite unowned file', $dbPhpRel, null, null);
+        envlite_prompt_or_abort($force, 'up', 'overwrite unowned file', $dbPhpRel, null, null);
     }
     $hash = envlite_atomic_write($dbPhpAbs, $dbBytes);
     $manifest[$dbPhpRel] = $hash;
@@ -642,9 +874,9 @@ function envlite_phase6_install(string $repoRoot, bool $force): void {
     $ownership = envlite_ownership($manifest, $outRel, $current);
     if ($ownership === 'owned_drifted') {
         $cur = $current !== null ? hash('sha256', $current) : null;
-        envlite_prompt_or_abort($force, 'init', 'overwrite drifted file', $outRel, $manifest[$outRel], $cur);
+        envlite_prompt_or_abort($force, 'up', 'overwrite drifted file', $outRel, $manifest[$outRel], $cur);
     } elseif ($ownership === 'unowned') {
-        envlite_prompt_or_abort($force, 'init', 'overwrite unowned file', $outRel, null, null);
+        envlite_prompt_or_abort($force, 'up', 'overwrite unowned file', $outRel, null, null);
     }
     $hash = envlite_atomic_write($outAbs, $rendered);
     $manifest[$outRel] = $hash;
@@ -714,7 +946,7 @@ function envlite_phase7_fetch_salts(): ?string {
         }
         return rtrim($bytes, "\n");
     } catch (\Throwable $e) {
-        envlite_log('init', "phase 7: salt fetch failed: " . $e->getMessage() . " (continuing with sample placeholders)");
+        envlite_log('up', "phase 7: salt fetch failed: " . $e->getMessage() . " (continuing with sample placeholders)");
         return null;
     }
 }
@@ -742,9 +974,9 @@ function envlite_phase7_install(string $repoRoot, int $port, bool $force): void 
     $ownership = envlite_ownership($manifest, $outRel, $current);
     if ($ownership === 'owned_drifted') {
         $cur = $current !== null ? hash('sha256', $current) : null;
-        envlite_prompt_or_abort($force, 'init', 'overwrite drifted file', $outRel, $manifest[$outRel], $cur);
+        envlite_prompt_or_abort($force, 'up', 'overwrite drifted file', $outRel, $manifest[$outRel], $cur);
     } elseif ($ownership === 'unowned') {
-        envlite_prompt_or_abort($force, 'init', 'overwrite unowned file', $outRel, null, null);
+        envlite_prompt_or_abort($force, 'up', 'overwrite unowned file', $outRel, null, null);
     }
     $hash = envlite_atomic_write($outAbs, $rendered);
     $manifest[$outRel] = $hash;
@@ -845,78 +1077,22 @@ function envlite_main(array $argv): int {
         fwrite(STDERR, envlite_help_text());
         return 0;
     }
-    if ($sub === 'init')  { return envlite_cmd_init($args, $force); }
     if ($sub === 'up')    { return envlite_cmd_up($args, $force); }
-    if ($sub === 'serve') { return envlite_cmd_serve($args, $force); }
     if ($sub === 'clean') { return envlite_cmd_clean($args, $force); }
 
     envlite_log(null, "unknown subcommand: $sub");
     return 2;
 }
 
-function envlite_cmd_init(array $args, bool $force): int {
-    $port = null;
-    $noBuild = false;
-    foreach ($args as $a) {
-        if ($a === '--no-build') { $noBuild = true; continue; }
-        if (preg_match('/^--port=(\d+)$/', $a, $m)) {
-            $port = (int) $m[1];
-            if ($port < 1 || $port > 65535) {
-                envlite_log('init', "invalid --port value: $a");
-                return 2;
-            }
-            continue;
-        }
-        envlite_log('init', "unknown argument: $a");
-        return 2;
-    }
-
-    $repoRoot = getcwd();
-
-    // Phase 0
-    envlite_phase0_run($repoRoot);
-
-    // Observation point: record .ht.sqlite if present and not in manifest.
-    envlite_observe_ht_sqlite($repoRoot);
-
-    // Phase 1
-    $resolvedPort = envlite_phase1_discover_port($repoRoot, $port);
-    fwrite(STDERR, "envlite init: port $resolvedPort\n");
-
-    // Phase 2: npm ci
-    envlite_phase2_npm_ci($repoRoot);
-
-    // Phase 3: build:dev (skippable)
-    if (!$noBuild) {
-        envlite_phase3_build_dev($repoRoot);
-    }
-
-    // Phase 4: composer install
-    envlite_phase4_composer_install($repoRoot);
-
-    // Phases 5-7 throw RuntimeException for diagnostic failures (e.g.,
-    // SHA256 mismatch, missing placeholders, I/O errors). Convert each into
-    // the spec's `envlite init: phase N: <cause>` line + exit 1.
-    $phases = [
-        [5, function () use ($repoRoot, $force) { envlite_phase5_install($repoRoot, $force); }],
-        [6, function () use ($repoRoot, $force) { envlite_phase6_install($repoRoot, $force); }],
-        [7, function () use ($repoRoot, $resolvedPort, $force) { envlite_phase7_install($repoRoot, $resolvedPort, $force); }],
-        [8, function () use ($repoRoot, $resolvedPort) { envlite_phase8_install_site($repoRoot, $resolvedPort); }],
-    ];
-    foreach ($phases as [$n, $fn]) {
-        $rc = envlite_phase_guard('init', $n, $fn);
-        if ($rc !== 0) { return $rc; }
-    }
-
-    fwrite(STDERR, "envlite init: ok — http://127.0.0.1:$resolvedPort/ (admin / password)\n");
-    return 0;
-}
-
 function envlite_cmd_up(array $args, bool $force): int {
     $port = null;
     $noBuild = false;
+    $noServe = false;
+    $rebuild = false;
     foreach ($args as $a) {
         if ($a === '--no-build') { $noBuild = true; continue; }
+        if ($a === '--no-serve') { $noServe = true; continue; }
+        if ($a === '--rebuild')  { $rebuild = true; continue; }
         if (preg_match('/^--port=(\d+)$/', $a, $m)) {
             $port = (int) $m[1];
             if ($port < 1 || $port > 65535) {
@@ -937,14 +1113,27 @@ function envlite_cmd_up(array $args, bool $force): int {
     $resolvedPort = envlite_phase1_discover_port($repoRoot, $port);
     fwrite(STDERR, "envlite up: port $resolvedPort\n");
 
-    envlite_phase2_npm_ci($repoRoot);
-    if (!$noBuild) {
-        envlite_phase3_build_dev($repoRoot);
-    }
-    envlite_phase4_composer_install($repoRoot);
+    // Phases 2 & 4 in parallel (composer install || npm ci), with skip+record.
+    $phase24 = ['phase2_skipped' => false, 'phase4_skipped' => false];
+    $rc = envlite_phase_guard('up', 24, function () use ($repoRoot, $rebuild, &$phase24) {
+        $phase24 = envlite_phase24_parallel($repoRoot, $rebuild);
+    });
+    if ($rc !== 0) { return $rc; }
+
+    // Phase 3 (build:dev), serial after the parallel pair.
+    $rc = envlite_phase_guard('up', 3, function () use ($repoRoot, $rebuild, $noBuild, $phase24) {
+        envlite_phase3_build_dev(
+            $repoRoot,
+            $rebuild,
+            $noBuild,
+            $phase24['phase2_skipped'],
+            $phase24['phase4_skipped']
+        );
+    });
+    if ($rc !== 0) { return $rc; }
 
     $phases = [
-        [5, function () use ($repoRoot, $force) { envlite_phase5_install($repoRoot, $force); }],
+        [5, function () use ($repoRoot, $force, $rebuild) { envlite_phase5_install($repoRoot, $force, $rebuild); }],
         [6, function () use ($repoRoot, $force) { envlite_phase6_install($repoRoot, $force); }],
         [7, function () use ($repoRoot, $resolvedPort, $force) { envlite_phase7_install($repoRoot, $resolvedPort, $force); }],
         [8, function () use ($repoRoot, $resolvedPort) { envlite_phase8_install_site($repoRoot, $resolvedPort); }],
@@ -952,6 +1141,11 @@ function envlite_cmd_up(array $args, bool $force): int {
     foreach ($phases as [$n, $fn]) {
         $rc = envlite_phase_guard('up', $n, $fn);
         if ($rc !== 0) { return $rc; }
+    }
+
+    if ($noServe) {
+        fwrite(STDERR, "envlite up: setup complete (--no-serve; not launching dev server)\n");
+        return 0;
     }
 
     if (!envlite_phase1_port_is_free($resolvedPort)) {
@@ -972,9 +1166,11 @@ function envlite_phase_guard(string $sub, int $n, callable $fn): int {
         return 0;
     } catch (\Throwable $e) {
         $msg = $e->getMessage();
-        $prefix = "phase $n: ";
-        if (strpos($msg, $prefix) !== 0) {
-            $msg = $prefix . $msg;
+        // If the exception message already starts with "phase N:" or
+        // "phases N and M:" — i.e. the inner code already named its phase —
+        // pass it through unchanged. Otherwise prepend "phase $n: ".
+        if (!preg_match('/^phases? \d/', $msg)) {
+            $msg = "phase $n: $msg";
         }
         envlite_log($sub, $msg);
         return 1;
@@ -993,40 +1189,6 @@ function envlite_observe_ht_sqlite(string $repoRoot): void {
     if ($bytes === false) { return; }
     $manifest[$rel] = hash('sha256', $bytes);
     envlite_manifest_save($repoRoot, $manifest);
-}
-
-function envlite_cmd_serve(array $args, bool $force): int {
-    if (!empty($args)) {
-        envlite_log('serve', 'unexpected arguments: ' . implode(' ', $args));
-        return 2;
-    }
-
-    $repoRoot = getcwd();
-    if (!envlite_phase0_is_wordpress_develop($repoRoot)) {
-        envlite_log('serve', 'not a wordpress-develop checkout');
-        return 3;
-    }
-
-    $cachePath = "$repoRoot/.envlite/port";
-    if (!is_file($cachePath)) {
-        envlite_log('serve', 'no cached port; run `envlite init` first');
-        return 1;
-    }
-    $port = (int) trim(file_get_contents($cachePath));
-    if ($port < 1 || $port > 65535) {
-        envlite_log('serve', "cached port out of range: $port");
-        return 1;
-    }
-
-    if (!envlite_phase1_port_is_free($port)) {
-        envlite_log('serve', "failed to bind 127.0.0.1:$port");
-        return 1;
-    }
-
-    // Hand off to the dev-server launcher. On Unix this calls pcntl_exec and
-    // never returns; on Windows it streams through proc_open and returns the
-    // exit code.
-    return envlite_run_dev_server($repoRoot, $port);
 }
 
 function envlite_cmd_clean(array $args, bool $force): int {
@@ -1069,6 +1231,7 @@ function envlite_cmd_clean(array $args, bool $force): int {
     // Remove .envlite/ itself.
     @unlink("$repoRoot/.envlite/manifest");
     @unlink("$repoRoot/.envlite/port");
+    @unlink("$repoRoot/.envlite/state");
     @rmdir("$repoRoot/.envlite");
     return 0;
 }

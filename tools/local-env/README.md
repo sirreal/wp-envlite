@@ -38,24 +38,35 @@ anything is missing.
 ## Other commands
 
 ```sh
-php tools/local-env/envlite.php init     # setup only, no server
-php tools/local-env/envlite.php serve    # server only (after init)
-php tools/local-env/envlite.php clean    # remove envlite-created files
+php tools/local-env/envlite.php up --no-serve   # setup only, no server (CI)
+php tools/local-env/envlite.php clean           # remove envlite-created files
 ```
 
-`init` and `up` accept:
+`up` accepts:
 - `--port=N` — pick a specific port (1–65535) and cache it.
 - `--no-build` — skip `npm run build:dev`. Don't use this on a fresh
   checkout; phpunit will fail with `ABSPATH constant ... non-existent path`.
+- `--no-serve` — run setup phases only; don't launch the dev server.
+- `--rebuild` — re-run every setup phase, ignoring cached skip-state.
+  Use when state is suspect or to validate a fresh install.
 - `--force` — skip prompts (envlite prompts before overwriting files
   you've modified). Required for non-interactive contexts.
 
+Re-running `up` is cheap. envlite hashes `package-lock.json` and
+`composer.json` after each successful install; if those haven't
+changed and the output directories are present, the install phases
+skip. `npm run build:dev` skips when both deps phases skipped and the
+build sentinel (`src/wp-includes/version.php`) exists. To force a
+re-install of deps without nuking the directories, use `--rebuild`;
+to force from scratch, `rm -rf node_modules/ vendor/` and re-run.
+
 `clean` removes envlite's config files (`src/wp-config.php`,
 `wp-tests-config.php`, `src/wp-content/db.php`), the bundled SQLite
-plugin directory, the cached port, and — on a single confirmation
-prompt — the live SQLite DB at `src/wp-content/database/.ht.sqlite`.
-It does not touch `node_modules/`, `vendor/`, or build artifacts under
-`src/`. For those, use `git clean -fdx`.
+plugin directory, the cached port, the skip-state file, and — on a
+single confirmation prompt — the live SQLite DB at
+`src/wp-content/database/.ht.sqlite`. It does not touch
+`node_modules/`, `vendor/`, or build artifacts under `src/`. For
+those, use `git clean -fdx`.
 
 ## Use `127.0.0.1`, not `localhost`
 
@@ -71,6 +82,6 @@ macOS/Linux, so a browser hitting `http://localhost:<port>/` can get
 | `extension X not loaded` | Install it. Ubuntu/Debian: `apt install php-sqlite3 php-xml php-zip`. Homebrew's `php` already bundles them. |
 | `<tool> below minimum` | Upgrade node/npm/composer. |
 | `SHA256 mismatch on plugin zip` | Retry once. If persistent, the pinned SQLite drop-in needs a deliberate update — file an issue. |
-| `failed to bind 127.0.0.1:<port>` | Another process holds the port. `lsof -nP -iTCP:<port> -sTCP:LISTEN`; kill the holder, or `init --port=N` to relocate. |
+| `failed to bind 127.0.0.1:<port>` | Another process holds the port. `lsof -nP -iTCP:<port> -sTCP:LISTEN`; kill the holder, or `up --port=N` to relocate. |
 | phpunit fails with deprecation-as-exception | wordpress-develop sets `convertDeprecationsToExceptions=true`; newer PHP may surface deprecations from core code as exceptions. Per-group fix, not envlite's. |
 | Corrupt-DB error after an interrupted run | Delete `src/wp-content/database/.ht.sqlite` and re-run. |

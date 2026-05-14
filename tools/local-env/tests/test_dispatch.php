@@ -10,6 +10,13 @@ function test_dispatch_unknown_subcommand_returns_two() {
     envlite_assert_eq(2, envlite_main(['envlite.php', 'bogus']));
 }
 
+function test_dispatch_init_and_serve_are_unknown() {
+    // Unreleased — `init` and `serve` were removed in favor of `up`.
+    // They should now error as unknown subcommands.
+    envlite_assert_eq(2, envlite_main(['envlite.php', 'init']));
+    envlite_assert_eq(2, envlite_main(['envlite.php', 'serve']));
+}
+
 function test_dispatch_force_flag_recognized() {
     envlite_assert_eq(2, envlite_main(['envlite.php', '--force', 'bogus']));
 }

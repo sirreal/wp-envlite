@@ -51,6 +51,7 @@ function test_smoke_phases5_through_7_then_clean() {
     $paths = envlite_clean_collect($m);
     envlite_clean_apply($dir, $paths);
     @unlink("$dir/.envlite/manifest");
+    @unlink("$dir/.envlite/state");
     @rmdir("$dir/.envlite");
 
     envlite_assert(!is_file("$dir/wp-tests-config.php"));
