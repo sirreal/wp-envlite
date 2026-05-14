@@ -716,13 +716,17 @@ before being overwritten; `--force` answers yes to every such prompt.
    `.cache/envlite/state` once extraction succeeds — subsequent `up` runs
    compare against this to detect a code-level pin bump.
 
-   Immediately before invoking `ZipArchive::extractTo`, **unlink any
-   symlink at the plugin path** (the ownership prompt above has
-   authorized this when needed). Without that step, `extractTo` would
-   write through the symlink target rather than creating a real
-   directory at the plugin path — potentially modifying files anywhere
-   on disk reachable via the link. Unlinking removes the symlink only;
-   POSIX semantics never touch the target.
+   Immediately before invoking `ZipArchive::extractTo`, **clear any
+   non-real-directory entry at the plugin path** (the ownership prompt
+   above has authorized this when needed). Symlinks (any flavor) and
+   non-directory entries (regular file, FIFO, socket) are unlinked.
+   A real directory is left in place so `ZipArchive::extractTo`
+   overlays into it. The clear re-stats the path after each unlink
+   attempt: if a symlink (or any other non-directory) still remains —
+   the `@unlink` failed silently on permissions/RO mounts, or a TOCTOU
+   race between the initial scan and the extract commit point swapped
+   the entry — abort with a phase 5 diagnostic rather than letting
+   `extractTo` follow the link to outside the checkout.
 
    Also immediately before `ZipArchive::extractTo`, drop any
    pre-existing `phase5.recorded_pin_sha` entry from state.

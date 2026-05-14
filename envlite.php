@@ -1099,6 +1099,40 @@ function envlite_phase5_stage_temp_zip(string $tmpDir, string $bytes): string {
 }
 
 /**
+ * Strict pre-extract cleanup for the Phase 5 plugin path. The caller
+ * holds the user's consent (prompt approved or --force); this function
+ * makes sure the actual state on disk matches what extractTo needs:
+ * a real directory or nothing. Anything else (symlink any flavor,
+ * regular file, FIFO, socket) is unlinked.
+ *
+ * Re-stats AFTER the unlink attempt: a `@unlink` can fail silently on
+ * permissions/RO mounts, and a TOCTOU race could swap a real entry for
+ * a symlink between the caller's initial scan and now. If a symlink
+ * (or other non-directory) remains, throw with the `phase 5:` prefix
+ * — extractTo would otherwise follow it and write outside the checkout.
+ * A real directory at the path is left in place; ZipArchive::extractTo
+ * overlays into existing directories, matching the unowned-but-prompted
+ * "user-installed plugin" case.
+ */
+function envlite_phase5_clear_plugin_blocker(string $pluginDir): void {
+    if (is_link($pluginDir)) {
+        @unlink($pluginDir);
+    } elseif (file_exists($pluginDir) && !is_dir($pluginDir)) {
+        @unlink($pluginDir);
+    }
+    if (is_link($pluginDir)) {
+        throw new \RuntimeException(
+            "phase 5: symlink at $pluginDir could not be removed; refusing to extract"
+        );
+    }
+    if (file_exists($pluginDir) && !is_dir($pluginDir)) {
+        throw new \RuntimeException(
+            "phase 5: non-directory entry at $pluginDir could not be removed; refusing to extract"
+        );
+    }
+}
+
+/**
  * Drop the phase 5 pin SHA from state before re-entering the
  * download/extract path. Idempotent — no-op when the pin isn't recorded.
  *
@@ -1138,29 +1172,32 @@ function envlite_phase5_install(
     $manifest  = envlite_manifest_load($repoRoot);
     $state     = envlite_state_load($repoRoot);
 
-    // Step 1: skip download/extract if (a) plugin dir is a REAL directory
-    // (not a symlink) in the manifest, (b) db.copy is present, AND (c) the
-    // recorded pin SHA matches the current code literal. --rebuild
-    // bypasses the skip. A symlink at the plugin path is always drift —
-    // envlite never writes a symlink — so the skip predicate must not
-    // trust it even when the manifest claims ownership and db.copy
-    // "exists" through the symlink target.
+    // Step 1: skip download/extract if (a) plugin path is a REAL directory
+    // (not a symlink or any other non-dir entry) recorded in the manifest,
+    // (b) db.copy is present, AND (c) the recorded pin SHA matches the
+    // current code literal. --rebuild bypasses the skip. envlite only ever
+    // writes a real directory at the plugin path; anything else there is
+    // external modification and must not satisfy the skip predicate.
     $pluginIsLink = is_link($pluginDir);
+    $pluginIsRealDir = is_dir($pluginDir) && !$pluginIsLink;
     $pinMatches = ($state['phase5.recorded_pin_sha'] ?? null) === ENVLITE_SQLITE_PLUGIN_SHA256;
     $alreadyInstalled = !$rebuild
-        && !$pluginIsLink
+        && $pluginIsRealDir
         && isset($manifest[$pluginRel])
         && $manifest[$pluginRel] === 'dir'
         && is_file($dbCopy)
         && $pinMatches;
     if (!$alreadyInstalled) {
-        // Steps 2-4: prompt if dest exists and is not envlite-owned.
-        // Real-directory-not-in-manifest is a user-installed plugin. A
-        // symlink (any flavor) is always external, regardless of whether
-        // the manifest mentions it — envlite never writes one.
-        $needsPrompt = $pluginIsLink
-            || (is_dir($pluginDir) && !$pluginIsLink && !isset($manifest[$pluginRel]));
-        if ($needsPrompt) {
+        // Steps 2-4: prompt before overwriting if anything other than
+        // envlite's owned real-directory tree sits at the plugin path:
+        //   - any symlink (always external; envlite never writes one)
+        //   - any non-directory entry (regular file, FIFO, socket) —
+        //     extractTo cannot create a directory through these, and
+        //     envlite never writes them either
+        //   - an unowned real directory (user-installed plugin)
+        $somethingExists = file_exists($pluginDir) || $pluginIsLink;
+        $isOurOwnedDir = $pluginIsRealDir && isset($manifest[$pluginRel]);
+        if ($somethingExists && !$isOurOwnedDir) {
             envlite_prompt_or_abort($force, 'up', 'overwrite plugin tree', $pluginRel, null, null);
         }
         $bytes = $fetcher();
@@ -1180,17 +1217,13 @@ function envlite_phase5_install(
             // download), forcing every subsequent `up` to re-fetch.
             envlite_phase5_drop_recorded_pin($repoRoot);
             unset($state['phase5.recorded_pin_sha']);
-            // Unlink any symlink at the plugin path BEFORE extractTo runs.
-            // The prompt above has authorized the overwrite; if we leave
-            // the symlink in place, extractTo writes through it into the
-            // target — which could be anywhere outside the checkout.
-            // Unlinking removes only the symlink itself (POSIX semantics),
-            // never the target, so the user's symlinked content is left
-            // intact at its real location. extractTo then creates a real
-            // directory at the plugin path.
-            if ($pluginIsLink) {
-                @unlink($pluginDir);
-            }
+            // Strict pre-extract clear of any non-real-directory entry at
+            // the plugin path. Re-stats first (TOCTOU defense — the
+            // earlier pluginIsLink/RealDir snapshot was taken before the
+            // fetch/SHA/zip-open window) and aborts if an @unlink fails
+            // silently. extractTo would otherwise write through a
+            // surviving symlink to outside the checkout.
+            envlite_phase5_clear_plugin_blocker($pluginDir);
             // extractTo returns false on partial/failed extraction (permissions,
             // disk full, malformed entries). Recording the directory as
             // envlite-owned in that case would let a later run satisfy the

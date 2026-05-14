@@ -163,6 +163,74 @@ function test_phase5_does_not_skip_when_plugin_path_is_symlink() {
         'symlink target must not be deleted by phase 5 on pre-extract failure');
 }
 
+function test_phase5_clear_plugin_blocker_no_op_on_real_directory() {
+    // A real directory stays — extractTo overlays into it.
+    $dir = envlite_test_tmpdir('phase5-blocker-realdir');
+    $plugin = "$dir/sqlite-database-integration";
+    mkdir($plugin);
+    file_put_contents("$plugin/inner", 'survives');
+    envlite_phase5_clear_plugin_blocker($plugin);
+    envlite_assert(is_dir($plugin) && !is_link($plugin),
+        'real directory must survive the clear pass');
+    envlite_assert_eq('survives', file_get_contents("$plugin/inner"));
+}
+
+function test_phase5_clear_plugin_blocker_unlinks_symlink() {
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_tmpdir('phase5-blocker-symlink');
+    $plugin = "$dir/sqlite-database-integration";
+    $target = envlite_test_tmpdir('phase5-blocker-symlink-target');
+    file_put_contents("$target/external", 'must-survive');
+    symlink($target, $plugin);
+    envlite_phase5_clear_plugin_blocker($plugin);
+    envlite_assert(!is_link($plugin), 'symlink must be unlinked');
+    envlite_assert(!file_exists($plugin), 'symlink path must be empty afterwards');
+    envlite_assert_eq('must-survive', file_get_contents("$target/external"),
+        'symlink target must be untouched');
+}
+
+function test_phase5_clear_plugin_blocker_unlinks_regular_file() {
+    // Round 10 regression: a regular file at the plugin path used to
+    // slip past the prompt (and the @unlink in round 9's fix only
+    // handled symlinks), so extractTo would fail mid-extract instead
+    // of overwriting the user's file per the ownership contract.
+    $dir = envlite_test_tmpdir('phase5-blocker-regular');
+    $plugin = "$dir/sqlite-database-integration";
+    file_put_contents($plugin, 'stray file blocking the plugin path');
+    envlite_phase5_clear_plugin_blocker($plugin);
+    envlite_assert(!file_exists($plugin),
+        'regular-file blocker must be unlinked before extractTo');
+}
+
+function test_phase5_clear_plugin_blocker_throws_when_symlink_cannot_be_removed() {
+    // Force @unlink to fail by chmod'ing the parent directory to read-only.
+    // POSIX-only; root bypasses permission bits.
+    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) { return; }
+    $dir = envlite_test_tmpdir('phase5-blocker-readonly');
+    $plugin = "$dir/sqlite-database-integration";
+    $target = envlite_test_tmpdir('phase5-blocker-readonly-target');
+    symlink($target, $plugin);
+    chmod($dir, 0555); // r-x: cannot unlink children
+    try {
+        $thrown = null;
+        try {
+            envlite_phase5_clear_plugin_blocker($plugin);
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        }
+        envlite_assert($thrown !== null,
+            'must throw when the surviving symlink cannot be cleared');
+        envlite_assert(strpos($thrown->getMessage(), 'phase 5') !== false,
+            'error must carry the phase 5 prefix; got: ' . $thrown->getMessage());
+        envlite_assert(strpos($thrown->getMessage(), 'symlink') !== false,
+            'error must name the symlink; got: ' . $thrown->getMessage());
+        envlite_assert(strpos($thrown->getMessage(), 'refusing to extract') !== false,
+            'error must spell out the refusal so the rationale is in the user log');
+    } finally {
+        chmod($dir, 0755);
+    }
+}
+
 function test_phase5_install_preserves_pin_when_fetcher_throws_pre_extract() {
     // Pre-extract failures (offline HTTP, SHA mismatch, bad zip) must not
     // clear `phase5.recorded_pin_sha`. The existing plugin tree on disk
