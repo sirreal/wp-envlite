@@ -227,6 +227,66 @@ function test_clean_clears_regular_file_at_state_dir_path() {
         'regular-file blocker must be removed by clean');
 }
 
+function test_clean_walks_manifest_when_state_dir_is_symlink_to_directory() {
+    // Round 12 regression: a symlink-to-directory at `.cache/envlite` is
+    // a legitimate user setup (the spec allows redirecting state to a
+    // different filesystem). The round-11 blocker branch treated it as a
+    // non-directory blocker and unlinked without walking the manifest —
+    // so envlite-managed files in the checkout (wp-config.php, db.php,
+    // wp-tests-config.php, etc.) survived clean. The fix restricts the
+    // blocker branch to !is_dir; symlink-to-dir falls through to the
+    // normal manifest walk.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+
+    // Build a fixture wp-develop-shaped repo with managed outputs.
+    $repo = envlite_test_tmpdir('clean-symlink-state-dir');
+    mkdir("$repo/src", 0755, true);
+    file_put_contents("$repo/wp-tests-config.php", 'envlite-owned');
+    file_put_contents("$repo/src/wp-config.php", 'envlite-owned');
+
+    // Put the state directory on a different path (the symlink target).
+    $stateTarget = envlite_test_tmpdir('clean-symlink-state-target');
+    mkdir("$repo/.cache");
+    symlink($stateTarget, "$repo/.cache/envlite");
+    envlite_assert(is_link("$repo/.cache/envlite"));
+    envlite_assert(is_dir("$repo/.cache/envlite"),
+        'symlink-to-dir must satisfy is_dir');
+
+    // Seed manifest at the symlink target so the walk finds the
+    // envlite-managed outputs via the symlinked state dir.
+    $manifest = [
+        'src/wp-config.php' => hash('sha256', 'envlite-owned'),
+        'wp-tests-config.php' => hash('sha256', 'envlite-owned'),
+    ];
+    envlite_manifest_save($repo, $manifest);
+    envlite_assert(file_exists("$stateTarget/manifest"),
+        'manifest must be physically written to the symlink target');
+
+    $origCwd = getcwd();
+    chdir($repo);
+    try {
+        $rc = envlite_cmd_clean([], true);
+    } finally {
+        chdir($origCwd);
+    }
+
+    envlite_assert_eq(0, $rc, 'clean must succeed walking through the symlinked state dir');
+    envlite_assert(!file_exists("$repo/wp-tests-config.php"),
+        'managed wp-tests-config.php must be removed by the manifest walk');
+    envlite_assert(!file_exists("$repo/src/wp-config.php"),
+        'managed src/wp-config.php must be removed by the manifest walk');
+    // The symlink itself is removed (round 8 symlink-aware top-level rule).
+    envlite_assert(!is_link("$repo/.cache/envlite"),
+        '.cache/envlite symlink must be unlinked by the final rrmdir step');
+    // The symlink target survives by design (rrmdir refuses to recurse
+    // through a symlink at the top level) — that's the safety guarantee
+    // from round 8: clean cannot delete user-owned files reached via the
+    // link. Some residual state files at the target are accepted; the
+    // user can rm them manually.
+    envlite_assert(is_dir($stateTarget),
+        'symlink target dir must survive (round 8 safety contract)');
+}
+
 function test_rrmdir_refuses_to_recurse_into_symlinked_directory() {
     // Round 8 P1 regression: if envlite_rrmdir is invoked on a symlink
     // that points to a real directory, the unguarded scandir would

@@ -1756,21 +1756,26 @@ function envlite_cmd_clean(array $args, bool $force): int {
     }
     $repoRoot = getcwd();
     $stateDir = "$repoRoot/.cache/envlite";
-    // Three states for the state-directory path:
-    //   - nothing there → exit early with "nothing to clean"
-    //   - real directory → normal clean flow below
-    //   - non-directory blocker (regular file, FIFO, symlink-any-flavor):
-    //     clear it so a future `up` can recreate the state directory.
-    //     is_dir alone misses this case (returns false → "nothing to
-    //     clean" success, blocker survives, next `up` cannot mkdir).
+    // Four shapes the state path can take:
+    //   a) Nothing there → "nothing to clean" success.
+    //   b) Real directory → walk the manifest, clean, rrmdir.
+    //   c) Symlink to a directory → walk the manifest (reads through the
+    //      symlink), clean. Final rrmdir unlinks the symlink only, per
+    //      the symlink-aware top-level rule (round 8); the target's own
+    //      residual state files survive but are no longer linked to.
+    //   d) Non-directory entry (regular file, FIFO, broken symlink,
+    //      symlink-to-file) → no manifest can live here. Just unlink
+    //      the blocker so the next `up` can recreate the state dir.
+    //
+    // The flag of interest is `is_dir($stateDir)`: true for (b) and (c),
+    // false for (d) and (a). is_link distinguishes (c) from (b) but the
+    // manifest walk handles both the same way.
     if (!is_dir($stateDir) && !is_link($stateDir) && !file_exists($stateDir)) {
         envlite_log('clean', 'nothing to clean (no .cache/envlite/ directory)');
         return 0;
     }
-    if (!is_dir($stateDir) || is_link($stateDir)) {
-        // Something other than a real directory is at the state path.
-        // The manifest can't exist (it would live inside a directory),
-        // so there's nothing to walk; just clear the blocker and report.
+    if (!is_dir($stateDir)) {
+        // Case (d): no walkable manifest, just clear the blocker.
         if (!@unlink($stateDir)) {
             envlite_log('clean', "could not remove non-directory at .cache/envlite/");
             return 1;
@@ -1778,6 +1783,7 @@ function envlite_cmd_clean(array $args, bool $force): int {
         envlite_log('clean', 'removed non-directory blocker at .cache/envlite/');
         return 0;
     }
+    // Cases (b) and (c) fall through to the manifest walk below.
 
     // Transient observation: the .ht.sqlite entry exists only so the file
     // appears in this clean invocation's prompt. If the user declines or

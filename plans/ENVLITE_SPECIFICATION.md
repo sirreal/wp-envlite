@@ -1227,6 +1227,16 @@ this step the blocker would survive forever and the next `up` could
 not recreate the state directory because a non-directory entry would
 still sit at that path.
 
+A symlink to an **existing directory**, by contrast, is a legitimate
+user setup (state redirected to a different filesystem). `clean`
+walks the manifest through the symlink and removes the
+envlite-managed checkout files normally; only at the final state-dir
+removal step does the symlink-aware top-level rule kick in, unlinking
+the symlink without recursing into the target. The discriminator is
+`is_dir($stateDir)` — true for both real directories and
+symlinks-to-directories, false for broken symlinks and non-directory
+blockers.
+
 ---
 
 ## Outputs (final repo state)
