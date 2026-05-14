@@ -1498,6 +1498,20 @@ function envlite_cmd_up(array $args, bool $force): int {
         if ($rc !== 0) { return $rc; }
     }
 
+    // Re-observe `.ht.sqlite` now that Phase 8 has triggered its creation.
+    // On a fresh checkout the DB didn't exist at the start-of-up observation
+    // point, so the manifest didn't yet record it. The spec's final-state
+    // contract requires the live DB to be envlite-tracked content after a
+    // successful up — without this second pass, the first run leaves the
+    // file orphan (not in the manifest) and a later clean wouldn't prompt.
+    // Persist mode so the ownership carries across runs.
+    try {
+        envlite_observe_ht_sqlite($repoRoot, true);
+    } catch (\Throwable $e) {
+        envlite_log('up', 'observe .ht.sqlite (post-phase-8): ' . $e->getMessage());
+        return 1;
+    }
+
     if ($noServe) {
         fwrite(STDERR, "envlite up: setup complete (--no-serve; not launching dev server)\n");
         return 0;

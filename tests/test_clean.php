@@ -127,6 +127,41 @@ function test_observe_ht_sqlite_persist_throws_on_unwritable_cache_dir() {
     }
 }
 
+function test_observe_ht_sqlite_records_db_only_after_it_exists() {
+    // Round 6 regression: on a fresh checkout, the start-of-up observation
+    // runs before Phase 8 has created `.ht.sqlite`, so the manifest stays
+    // empty for the DB. envlite_cmd_up calls observe(persist=true) a
+    // second time *after* Phase 8 to capture the file. This test mimics
+    // both observation points in isolation and asserts the second one
+    // does record the file.
+    $dir = envlite_test_tmpdir('observe-after-phase8');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    mkdir("$dir/src/wp-content/database", 0755, true);
+
+    // First observation: DB does not exist yet. Manifest must remain empty.
+    envlite_observe_ht_sqlite($dir, true);
+    $manifest = envlite_manifest_load($dir);
+    envlite_assert(
+        !isset($manifest['src/wp-content/database/.ht.sqlite']),
+        'first observation must not record a non-existent DB'
+    );
+
+    // Phase 8 (simulated) creates the live DB.
+    file_put_contents("$dir/src/wp-content/database/.ht.sqlite", 'sqlite-after-install');
+
+    // Second observation: now the DB exists; persist mode must record it.
+    envlite_observe_ht_sqlite($dir, true);
+    $manifest = envlite_manifest_load($dir);
+    envlite_assert(
+        isset($manifest['src/wp-content/database/.ht.sqlite']),
+        'post-phase-8 observation must record the newly created DB'
+    );
+    envlite_assert_eq(
+        hash('sha256', 'sqlite-after-install'),
+        $manifest['src/wp-content/database/.ht.sqlite']
+    );
+}
+
 function test_observe_ht_sqlite_returns_existing_manifest_when_db_missing() {
     $dir = envlite_test_tmpdir('observe-no-db');
     mkdir("$dir/.cache/envlite", 0755, true);

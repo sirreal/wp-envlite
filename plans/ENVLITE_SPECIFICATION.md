@@ -1181,17 +1181,24 @@ exists by the time `up` returns (or, with `--no-serve`, by the time
 the setup phases complete). The file may hold user-authored content
 (posts, settings, uploads).
 
-**Observation point:** at the start of every `up` and every `clean`,
-envlite checks whether `src/wp-content/database/.ht.sqlite` exists on
-disk and is not yet in the manifest; if so, envlite adds an entry
-recording the file's hash at that moment. The `up` recording persists
-in the manifest as ongoing ownership. The `clean` recording is
-transient — it exists only so the file appears in *this* invocation's
-removal prompt; the manifest is wiped at the end of `clean` regardless.
-Either way the guarantee is the same: a `clean` invoked after a prior
-`up` treats the DB as envlite-tracked content and prompts before
-removing it, rather than silently leaving an orphan or silently
-deleting user data.
+**Observation point:** envlite observes `src/wp-content/database/.ht.sqlite`
+at the start of every `up`, again at the end of every `up` (after
+Phase 8), and at the start of every `clean`. The observation checks
+whether the file exists on disk and is not yet in the manifest; if so,
+envlite adds an entry recording the file's hash at that moment. The
+two-pass arrangement for `up` is required because Phase 8 is the
+first run that creates the DB on a fresh checkout: the start-of-up
+observation finds no file, Phase 8 then triggers WordPress to create
+`.ht.sqlite`, and the end-of-up observation records the live file.
+Without the second pass, a first successful `up` would leave the DB
+out of the manifest and a later `clean` would not prompt before
+removing it. The `up` recordings persist in the manifest as ongoing
+ownership. The `clean` recording is transient — it exists only so
+the file appears in *this* invocation's removal prompt; the manifest
+is wiped at the end of `clean` regardless. Either way the guarantee
+is the same: a `clean` invoked after a prior `up` treats the DB as
+envlite-tracked content and prompts before removing it, rather than
+silently leaving an orphan or silently deleting user data.
 
 **`clean` semantics:** walk the manifest in reverse insertion order,
 present the full list of paths to be removed in a single prompt, then
