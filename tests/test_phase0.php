@@ -1,7 +1,15 @@
 <?php
 function test_phase0_cwd_check_passes_for_real_repo() {
-    // The test runs inside the repo. Use the path that contains the runner.
-    $root = dirname(__DIR__); // tests/ -> repo
+    // envlite lives in its own repo; the cwd check needs a synthetic
+    // WP-develop tree with every marker present.
+    $root = envlite_test_tmpdir('phase0-checkout');
+    mkdir("$root/src/wp-includes", 0755, true);
+    mkdir("$root/tests/phpunit/includes", 0755, true);
+    file_put_contents("$root/tests/phpunit/includes/bootstrap.php", '<?php');
+    file_put_contents("$root/package.json", '{}');
+    file_put_contents("$root/composer.json", '{}');
+    file_put_contents("$root/wp-config-sample.php", '<?php');
+    file_put_contents("$root/wp-tests-config-sample.php", '<?php');
     envlite_assert(envlite_phase0_is_wordpress_develop($root), "expected $root to be a WP-develop checkout");
 }
 

@@ -1,4 +1,16 @@
 <?php
+function envlite_test_wp_tests_config_sample(): string {
+    // Inline mimic of wp-tests-config-sample.php carrying exactly what
+    // envlite_phase6_render touches: the three test-db placeholders and
+    // the bare WP_PHP_BINARY define that envlite pins to PHP_BINARY.
+    return "<?php\n"
+        . "define( 'DB_NAME',     'youremptytestdbnamehere' );\n"
+        . "define( 'DB_USER',     'yourusernamehere' );\n"
+        . "define( 'DB_PASSWORD', 'yourpasswordhere' );\n"
+        . "define( 'DB_HOST',     'localhost' );\n"
+        . "define( 'WP_PHP_BINARY', 'php' );\n";
+}
+
 function envlite_test_make_fixture_repo(): string {
     $dir = envlite_test_tmpdir('smoke');
     // Minimum tree to satisfy Phase 0's CWD check and Phases 5–7.
@@ -8,10 +20,10 @@ function envlite_test_make_fixture_repo(): string {
     file_put_contents("$dir/package.json", '{}');
     file_put_contents("$dir/composer.json", '{}');
     file_put_contents("$dir/tests/phpunit/includes/bootstrap.php", '<?php');
-    // Real samples, copied from the test repo so substitutions are exercised.
-    $repoRoot = dirname(__DIR__);
-    copy("$repoRoot/wp-config-sample.php",       "$dir/wp-config-sample.php");
-    copy("$repoRoot/wp-tests-config-sample.php", "$dir/wp-tests-config-sample.php");
+    // Inline samples so the fixture is hermetic; substitutions are still
+    // exercised against realistic placeholder content.
+    file_put_contents("$dir/wp-config-sample.php",       envlite_test_wp_config_sample());
+    file_put_contents("$dir/wp-tests-config-sample.php", envlite_test_wp_tests_config_sample());
     // Pre-stage the SQLite plugin so Phase 5 hits the skip-download branch.
     file_put_contents(
         "$dir/src/wp-content/plugins/sqlite-database-integration/db.copy",

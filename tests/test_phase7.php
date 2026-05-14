@@ -1,6 +1,30 @@
 <?php
+function envlite_test_wp_config_sample(): string {
+    // Inline mimic of wp-config-sample.php carrying exactly the structure
+    // envlite_phase7_render depends on: DB placeholders, an 8-define salt
+    // block (AUTH_KEY..NONCE_SALT) with the sample salt string, the
+    // marker line, and CRLF endings so the normalize test exercises that
+    // codepath.
+    return "<?php\r\n"
+        . "define( 'DB_NAME',     'database_name_here' );\r\n"
+        . "define( 'DB_USER',     'username_here' );\r\n"
+        . "define( 'DB_PASSWORD', 'password_here' );\r\n"
+        . "\r\n"
+        . "define( 'AUTH_KEY',         'put your unique phrase here' );\r\n"
+        . "define( 'SECURE_AUTH_KEY',  'put your unique phrase here' );\r\n"
+        . "define( 'LOGGED_IN_KEY',    'put your unique phrase here' );\r\n"
+        . "define( 'NONCE_KEY',        'put your unique phrase here' );\r\n"
+        . "define( 'AUTH_SALT',        'put your unique phrase here' );\r\n"
+        . "define( 'SECURE_AUTH_SALT', 'put your unique phrase here' );\r\n"
+        . "define( 'LOGGED_IN_SALT',   'put your unique phrase here' );\r\n"
+        . "define( 'NONCE_SALT',       'put your unique phrase here' );\r\n"
+        . "\r\n"
+        . "/* That's all, stop editing! Happy publishing. */\r\n"
+        . "require_once ABSPATH . 'wp-settings.php';\r\n";
+}
+
 function test_phase7_render_substitutes_db_constants() {
-    $sample = file_get_contents(dirname(__DIR__) . '/wp-config-sample.php');
+    $sample = envlite_test_wp_config_sample();
     $out = envlite_phase7_render($sample, 8421, null);
     envlite_assert(strpos($out, "'wordpress'") !== false, 'DB_NAME substituted');
     envlite_assert(strpos($out, 'database_name_here') === false);
@@ -9,7 +33,7 @@ function test_phase7_render_substitutes_db_constants() {
 }
 
 function test_phase7_render_injects_wp_home_siteurl_before_marker() {
-    $sample = file_get_contents(dirname(__DIR__) . '/wp-config-sample.php');
+    $sample = envlite_test_wp_config_sample();
     $out = envlite_phase7_render($sample, 8421, null);
     $home = "define( 'WP_HOME',    'http://127.0.0.1:8421' );";
     $site = "define( 'WP_SITEURL', 'http://127.0.0.1:8421' );";
@@ -22,7 +46,7 @@ function test_phase7_render_injects_wp_home_siteurl_before_marker() {
 }
 
 function test_phase7_render_replaces_salts_when_provided() {
-    $sample = file_get_contents(dirname(__DIR__) . '/wp-config-sample.php');
+    $sample = envlite_test_wp_config_sample();
     $salts = "define( 'AUTH_KEY', 'XYZ' );\n"
            . "define( 'SECURE_AUTH_KEY', 'XYZ' );\n"
            . "define( 'LOGGED_IN_KEY', 'XYZ' );\n"
@@ -37,7 +61,7 @@ function test_phase7_render_replaces_salts_when_provided() {
 }
 
 function test_phase7_render_keeps_sample_salts_when_null_provided() {
-    $sample = file_get_contents(dirname(__DIR__) . '/wp-config-sample.php');
+    $sample = envlite_test_wp_config_sample();
     $out = envlite_phase7_render($sample, 8421, null);
     // 8 sample salt lines remain unchanged
     envlite_assert_eq(8, substr_count($out, "'put your unique phrase here'"));
@@ -47,7 +71,7 @@ function test_phase7_render_treats_salts_as_literal_not_backreferences() {
     // The salts API returns random bytes; some include `$` and `\` which
     // preg_replace's replacement argument would interpret as backreferences.
     // The render path must insert the salts as a literal block.
-    $sample = file_get_contents(dirname(__DIR__) . '/wp-config-sample.php');
+    $sample = envlite_test_wp_config_sample();
     $literalBlock =
           "define( 'AUTH_KEY', 'a\$1b\\\\1c\$&d' );\n"
         . "define( 'SECURE_AUTH_KEY', 'X' );\n"
@@ -68,7 +92,7 @@ function test_phase7_render_normalizes_crlf_in_sample() {
     // wp-config-sample.php ships CRLF in tree on a normal checkout. The
     // render path must normalize so the output is LF-only and the recorded
     // hash is stable across git EOL settings.
-    $sample = file_get_contents(dirname(__DIR__) . '/wp-config-sample.php');
+    $sample = envlite_test_wp_config_sample();
     $out = envlite_phase7_render($sample, 8421, null);
     envlite_assert(strpos($out, "\r\n") === false, 'rendered config must be LF-only');
 }
