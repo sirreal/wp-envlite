@@ -1318,6 +1318,7 @@ function envlite_cmd_clean(array $args, bool $force): int {
     $manifest = envlite_manifest_load($repoRoot);
     $paths = envlite_clean_collect($manifest);
 
+    $failed = [];
     if (empty($paths)) {
         envlite_log('clean', 'manifest is empty; removing .cache/envlite/ only');
     } else {
@@ -1337,7 +1338,18 @@ function envlite_cmd_clean(array $args, bool $force): int {
                 return 5;
             }
         }
-        envlite_clean_apply($repoRoot, $paths);
+        $failed = envlite_clean_apply($repoRoot, $paths);
+    }
+
+    if (!empty($failed)) {
+        // Keep manifest and state intact so the user can retry. Wiping them
+        // here would orphan the still-present files — clean would no longer
+        // know they were envlite-owned.
+        foreach ($failed as $rel) {
+            envlite_log('clean', "could not remove: $rel");
+        }
+        envlite_log('clean', count($failed) . ' path(s) remain; manifest and state preserved for retry');
+        return 1;
     }
 
     // Remove .cache/envlite/ itself.
@@ -1353,8 +1365,18 @@ function envlite_clean_collect(array $manifest): array {
     return array_reverse(array_keys($manifest));
 }
 
-/** I/O: deletes each path. Must be called after the prompt has been resolved. */
-function envlite_clean_apply(string $repoRoot, array $paths): void {
+/**
+ * I/O: deletes each path. Must be called after the prompt has been resolved.
+ *
+ * Returns a list of manifest paths that could not be fully removed (file
+ * still on disk, or directory non-empty after rrmdir). Callers should
+ * treat a non-empty list as a clean failure and preserve manifest/state
+ * so the user can retry.
+ *
+ * @return string[] manifest-relative paths that remained after the attempt
+ */
+function envlite_clean_apply(string $repoRoot, array $paths): array {
+    $failed = [];
     foreach ($paths as $rel) {
         $abs = "$repoRoot/$rel";
         if (!file_exists($abs) && !is_dir($abs)) { continue; }
@@ -1363,7 +1385,11 @@ function envlite_clean_apply(string $repoRoot, array $paths): void {
         } else {
             @unlink($abs);
         }
+        if (file_exists($abs) || is_dir($abs)) {
+            $failed[] = $rel;
+        }
     }
+    return $failed;
 }
 
 function envlite_rrmdir(string $dir): void {
