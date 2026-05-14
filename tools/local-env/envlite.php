@@ -303,11 +303,55 @@ function envlite_proc_capture(array $cmd, ?string $cwd = null): array {
     );
     if (!is_resource($proc)) { return [-1, '', '']; }
     fclose($pipes[0]);
-    $stdout = stream_get_contents($pipes[1]);
-    $stderr = stream_get_contents($pipes[2]);
-    fclose($pipes[1]); fclose($pipes[2]);
+    [$stdout, $stderr] = envlite_drain_two_pipes($pipes[1], $pipes[2]);
     $exit = proc_close($proc);
-    return [$exit, $stdout ?: '', $stderr ?: ''];
+    return [$exit, $stdout, $stderr];
+}
+
+/**
+ * Concurrently drain two non-blocking pipes (typically stdout/stderr of a
+ * proc_open child) until both reach EOF. Closes each pipe as it finishes.
+ *
+ * Reading stdout to EOF before stderr can deadlock when the child writes
+ * more than a pipe buffer (~64KB on Linux) to stderr — the child blocks
+ * trying to write, the parent blocks waiting on stdout.
+ *
+ * @return array{0:string,1:string} [stdoutBuffer, stderrBuffer]
+ */
+function envlite_drain_two_pipes($pipe1, $pipe2): array {
+    stream_set_blocking($pipe1, false);
+    stream_set_blocking($pipe2, false);
+    $buf1 = $buf2 = '';
+    $isWindows = PHP_OS_FAMILY === 'Windows';
+    while (is_resource($pipe1) || is_resource($pipe2)) {
+        $read = [];
+        if (is_resource($pipe1)) { $read[] = $pipe1; }
+        if (is_resource($pipe2)) { $read[] = $pipe2; }
+
+        if ($isWindows) {
+            // stream_select cannot observe proc_open pipes on Windows.
+            usleep(50_000);
+        } else {
+            $write = $except = null;
+            $n = @stream_select($read, $write, $except, 1);
+            if ($n === false || $n === 0) { continue; }
+        }
+
+        $candidates = [];
+        if (is_resource($pipe1)) { $candidates[] = [$pipe1, 1]; }
+        if (is_resource($pipe2)) { $candidates[] = [$pipe2, 2]; }
+        foreach ($candidates as [$s, $which]) {
+            $chunk = fread($s, 8192);
+            if ($chunk !== false && $chunk !== '') {
+                if ($which === 1) { $buf1 .= $chunk; } else { $buf2 .= $chunk; }
+            }
+            if (feof($s)) {
+                fclose($s);
+                if ($which === 1) { $pipe1 = null; } else { $pipe2 = null; }
+            }
+        }
+    }
+    return [$buf1, $buf2];
 }
 
 /** Streaming variant: child stdio inherits the parent's. Used by Phase 3 and the dev-server fallback on Windows. */
@@ -1053,10 +1097,7 @@ PHP;
     }
     fwrite($pipes[0], $script);
     fclose($pipes[0]);
-    $stdout = stream_get_contents($pipes[1]);
-    $stderr = stream_get_contents($pipes[2]);
-    fclose($pipes[1]);
-    fclose($pipes[2]);
+    [$stdout, $stderr] = envlite_drain_two_pipes($pipes[1], $pipes[2]);
     $exit = proc_close($proc);
 
     if ($exit !== 0) {
