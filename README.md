@@ -53,13 +53,18 @@ php envlite.php clean           # remove envlite-created files
 - `--force` — skip prompts (envlite prompts before overwriting files
   you've modified). Required for non-interactive contexts.
 
-Re-running `up` is cheap. envlite hashes `package-lock.json` and
-`composer.json` after each successful install; if those haven't
-changed and the output directories are present, the install phases
-skip. `npm run build:dev` skips when both deps phases skipped and the
-build sentinel (`src/wp-includes/version.php`) exists. To force a
-re-install of deps without nuking the directories, use `--rebuild`;
-to force from scratch, `rm -rf node_modules/ vendor/` and re-run.
+Re-running `up` is cheap. envlite hashes `package-lock.json` after a
+successful `npm ci` and `PHP_VERSION + composer.json` after a
+successful `composer install` (the PHP-version mix re-runs Composer
+when you switch PHP, since wordpress-develop ships no `composer.lock`).
+If those hashes haven't changed and the output directories are
+present, the install phases skip. `npm run build:dev` skips only when
+both deps phases skipped AND its sentinel directory
+`src/wp-includes/js/dist/` is present (gitignored, created by
+`build:dev` — its presence proves a build has succeeded at least
+once). To force a re-install of deps without nuking the directories,
+use `--rebuild`; to force from scratch, `rm -rf node_modules/ vendor/`
+and re-run.
 
 `clean` removes envlite's config files (`src/wp-config.php`,
 `wp-tests-config.php`, `src/wp-content/db.php`), the bundled SQLite
