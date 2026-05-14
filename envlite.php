@@ -1557,8 +1557,13 @@ function envlite_cmd_up(array $args, bool $force): int {
     fwrite(STDERR, "envlite up: port $resolvedPort\n");
 
     // Phases 2 & 4 in parallel (composer install || npm ci), with skip+record.
+    // Pass a string label here — the spec has no "phase 24"; the parallel
+    // pair maps to phases 2 and 4. envlite_phase24_parallel's own throws
+    // already carry `phase 2: ...` / `phase 4: ...` / `phases 2 and 4: ...`
+    // prefixes; this label only kicks in for unprefixed throws (proc_open
+    // spawn failure, state-file write failure before the jobs start).
     $phase24 = ['phase2_skipped' => false, 'phase4_skipped' => false];
-    $rc = envlite_phase_guard('up', 24, function () use ($repoRoot, $rebuild, &$phase24) {
+    $rc = envlite_phase_guard('up', 'phases 2 and 4', function () use ($repoRoot, $rebuild, &$phase24) {
         $phase24 = envlite_phase24_parallel($repoRoot, $rebuild);
     });
     if ($rc !== 0) { return $rc; }
@@ -1617,7 +1622,20 @@ function envlite_cmd_up(array $args, bool $force): int {
     return envlite_run_dev_server($repoRoot, $resolvedPort);
 }
 
-function envlite_phase_guard(string $sub, int $n, callable $fn): int {
+/**
+ * Wrap a phase's execution in a single try/catch that turns any throw
+ * into the documented one-line `envlite <sub>: <prefix>: <message>` form
+ * plus exit code 1.
+ *
+ * @param int|string $label Phase label. An int produces "phase <n>:";
+ *                          a string is used verbatim as the prefix (e.g.
+ *                          "phases 2 and 4" for the parallel install pair,
+ *                          which has no single phase number in the spec).
+ *                          The label is dropped when the thrown message
+ *                          already starts with `phase`/`phases`, so inner
+ *                          code that names its own phase wins.
+ */
+function envlite_phase_guard(string $sub, $label, callable $fn): int {
     try {
         $fn();
         return 0;
@@ -1625,9 +1643,11 @@ function envlite_phase_guard(string $sub, int $n, callable $fn): int {
         $msg = $e->getMessage();
         // If the exception message already starts with "phase N:" or
         // "phases N and M:" — i.e. the inner code already named its phase —
-        // pass it through unchanged. Otherwise prepend "phase $n: ".
+        // pass it through unchanged. Otherwise prepend the caller-supplied
+        // label.
         if (!preg_match('/^phases? \d/', $msg)) {
-            $msg = "phase $n: $msg";
+            $prefix = is_int($label) ? "phase $label" : (string) $label;
+            $msg = "$prefix: $msg";
         }
         envlite_log($sub, $msg);
         return 1;
