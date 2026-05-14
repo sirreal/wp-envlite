@@ -21,6 +21,18 @@ $path = rawurldecode($rawPath);
 // literal backslashes are pathological in WordPress and not supported.
 $path = str_replace('\\', '/', $path);
 
+// Reject NUL bytes immediately. A request like `/%00` decodes to a path
+// containing a literal NUL; PHP 8+ filesystem APIs throw ValueError when
+// any argument contains NUL, so the file_exists call below would fatal
+// the router (response: blank 500) instead of returning a controlled
+// status. PHP 7.4 silently truncates at NUL, which is also wrong. A
+// 400 here is the right shape for "malformed URL" — no real client
+// sends NUL in a path on purpose.
+if (strpos($path, "\0") !== false) {
+    http_response_code(400);
+    return true;
+}
+
 // php -S does not honor Apache .ht* deny rules. Block any segment so the
 // SQLite DB at wp-content/database/.ht.sqlite is not downloadable. The
 // match is case-insensitive: macOS and Windows ship case-insensitive

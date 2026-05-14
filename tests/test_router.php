@@ -194,6 +194,46 @@ function test_router_blocks_backslash_segmented_ht_paths() {
     }
 }
 
+function test_router_rejects_paths_containing_nul_bytes() {
+    // Round 9 regression: `/%00` decodes to a path with a literal NUL.
+    // On PHP 8+ filesystem APIs throw ValueError for NUL arguments, so
+    // file_exists() inside the router would fatal the request and the
+    // client would see a blank 500. The router now short-circuits with
+    // a controlled 400 immediately after decoding.
+    $site = realpath(envlite_test_tmpdir('router-nul'));
+    envlite_assert($site !== false);
+    file_put_contents("$site/index.php", "<?php echo 'FALLTHROUGH';");
+
+    $router = realpath(__DIR__ . '/../router.php');
+    envlite_assert(is_file($router));
+    $port = envlite_test_router_pick_free_port();
+    $argv = [PHP_BINARY, '-S', "127.0.0.1:$port", '-t', $site, $router];
+    $proc = proc_open(
+        $argv,
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        $site
+    );
+    envlite_assert(is_resource($proc));
+
+    try {
+        envlite_assert(envlite_test_router_wait_for_bind($port));
+        foreach (['/%00', '/foo%00bar', '/wp-content/uploads/%00.jpg'] as $reqPath) {
+            $ctx = stream_context_create(['http' => ['ignore_errors' => true]]);
+            $body = @file_get_contents("http://127.0.0.1:$port$reqPath", false, $ctx);
+            envlite_assert(strpos($http_response_header[0] ?? '', '400') !== false,
+                "expected 400 for $reqPath, got: " . ($http_response_header[0] ?? 'no headers'));
+            envlite_assert(strpos($body ?: '', 'FALLTHROUGH') === false,
+                "$reqPath must not reach the front controller");
+        }
+    } finally {
+        foreach ($pipes as $p) { if (is_resource($p)) { @fclose($p); } }
+        $status = @proc_get_status($proc);
+        if ($status && $status['running']) { @proc_terminate($proc, 15); }
+        @proc_close($proc);
+    }
+}
+
 function test_router_serves_from_document_root_not_router_directory() {
     // Build a fixture "site" that does NOT share a parent with router.php.
     // realpath() normalizes /tmp -> /private/tmp on macOS so the assert

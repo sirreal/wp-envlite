@@ -254,6 +254,12 @@ segment regex miss the `.ht` while `file_exists($docroot . $path)`
 still resolves to the real DB. Normalize once so both checks see the
 same forward-slash-only form.
 
+The router rejects any path containing a NUL byte with a 400 response
+before reaching the filesystem APIs. PHP 8+ throws `ValueError` when
+NUL appears in any filesystem-API argument, so a request like `/%00`
+would otherwise fatal the router and the client would see a blank 500.
+NUL in a URL path is always malformed; the 400 is the right shape.
+
 **Bind failure.** envlite's pre-flight `port_is_free` probe detects an
 already-bound port and exits 1 with a single stderr line:
 `envlite up: failed to bind 127.0.0.1:<port>`. No manifest mutation
