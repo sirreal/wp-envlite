@@ -729,6 +729,26 @@ function envlite_run_parallel_buffered(array $jobs): array {
 }
 
 /**
+ * Format the failure dump for the parallel install pair: every job's
+ * buffer under a `--- <label> ---` separator, with a trailing newline
+ * if the buffer didn't end with one. Pure; called by
+ * envlite_phase24_parallel on any failure.
+ *
+ * @param array<string, array{exit:int, output:string}> $results
+ */
+function envlite_phase24_format_dump(array $results): string {
+    $out = '';
+    foreach ($results as $label => $r) {
+        $out .= "--- $label ---\n";
+        $out .= $r['output'];
+        if ($r['output'] === '' || substr($r['output'], -1) !== "\n") {
+            $out .= "\n";
+        }
+    }
+    return $out;
+}
+
+/**
  * Phases 2 and 4 — npm ci and composer install, in parallel.
  * Returns a record of which phases were skipped this run; the caller
  * (Phase 3) needs that to decide whether the build:dev sentinel + recorded
@@ -787,15 +807,12 @@ function envlite_phase24_parallel(string $repoRoot, bool $rebuild): array {
         if ($r['exit'] !== 0) { $failed[$label] = $r; }
     }
     if (!empty($failed)) {
-        // Dump only the buffers of failed processes, with labeled separators.
-        foreach ($results as $label => $r) {
-            if (!isset($failed[$label])) { continue; }
-            fwrite(STDERR, "--- $label ---\n");
-            fwrite(STDERR, $r['output']);
-            if ($r['output'] === '' || substr($r['output'], -1) !== "\n") {
-                fwrite(STDERR, "\n");
-            }
-        }
+        // Spec: "On failure of either or both, envlite waits for both to
+        // complete, then dumps each captured buffer to stderr under labeled
+        // separators." The surviving partner's output often carries
+        // warnings/context relevant to the failure, so dump every job's
+        // buffer, not just the failed one(s).
+        fwrite(STDERR, envlite_phase24_format_dump($results));
         if (count($failed) === 1) {
             $label = array_keys($failed)[0];
             $phaseN = $label === 'npm ci' ? 2 : 4;
