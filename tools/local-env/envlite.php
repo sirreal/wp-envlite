@@ -293,8 +293,53 @@ function envlite_phase0_version_ge(array $a, array $b): bool {
     return true;
 }
 
+/**
+ * On Windows, resolve a bare command name (e.g. "npm") to its full path
+ * by walking PATH + PATHEXT. PHP's proc_open with an array command does
+ * not perform PATHEXT lookup on Windows, so bare "npm" / "composer" —
+ * which ship as .cmd / .bat shims — fail to spawn there otherwise.
+ *
+ * On non-Windows, or for command names that already contain a path
+ * separator (or a drive letter on Windows), returns the input unchanged.
+ * When no resolution can be found, returns the input as well so the
+ * subsequent proc_open failure can surface its own diagnostic.
+ */
+function envlite_resolve_windows_command(string $name): string {
+    if (PHP_OS_FAMILY !== 'Windows') { return $name; }
+    if (strpbrk($name, "/\\") !== false) { return $name; }
+    if (preg_match('/^[A-Za-z]:/', $name)) { return $name; }
+
+    static $cache = [];
+    if (array_key_exists($name, $cache)) { return $cache[$name]; }
+
+    $exts = array_map('strtolower',
+        explode(';', getenv('PATHEXT') ?: '.COM;.EXE;.BAT;.CMD'));
+    $hasExplicitExt = preg_match('/\.[A-Za-z0-9]+$/', $name);
+    $paths = explode(PATH_SEPARATOR, getenv('PATH') ?: '');
+    foreach ($paths as $dir) {
+        if ($dir === '') { continue; }
+        $base = rtrim($dir, "\\/") . DIRECTORY_SEPARATOR . $name;
+        $candidates = $hasExplicitExt ? [$base] : array_map(fn($e) => $base . $e, $exts);
+        foreach ($candidates as $candidate) {
+            if (is_file($candidate)) {
+                return $cache[$name] = $candidate;
+            }
+        }
+    }
+    return $cache[$name] = $name;
+}
+
+/** Apply envlite_resolve_windows_command to the executable in a cmd array. */
+function envlite_resolve_cmd(array $cmd): array {
+    if (PHP_OS_FAMILY === 'Windows' && isset($cmd[0]) && is_string($cmd[0])) {
+        $cmd[0] = envlite_resolve_windows_command($cmd[0]);
+    }
+    return $cmd;
+}
+
 /** Capture variant: returns [$exit, $stdout, $stderr]. Used by Phase 0. */
 function envlite_proc_capture(array $cmd, ?string $cwd = null): array {
+    $cmd = envlite_resolve_cmd($cmd);
     $proc = @proc_open(
         $cmd,
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
@@ -356,6 +401,7 @@ function envlite_drain_two_pipes($pipe1, $pipe2): array {
 
 /** Streaming variant: child stdio inherits the parent's. Used by Phase 3 and the dev-server fallback on Windows. */
 function envlite_proc_stream(array $cmd, ?string $cwd = null): int {
+    $cmd = envlite_resolve_cmd($cmd);
     $proc = @proc_open($cmd, [0 => STDIN, 1 => STDOUT, 2 => STDERR], $pipes, $cwd);
     if (!is_resource($proc)) { return -1; }
     return proc_close($proc);
@@ -567,7 +613,7 @@ function envlite_run_parallel_buffered(array $jobs): array {
     $streamLabel = []; // (int) stream id => label
     foreach ($jobs as $label => $spec) {
         $proc = @proc_open(
-            $spec['cmd'],
+            envlite_resolve_cmd($spec['cmd']),
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes,
             $spec['cwd'] ?? null
