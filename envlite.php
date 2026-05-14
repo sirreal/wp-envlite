@@ -1738,11 +1738,18 @@ function envlite_observe_ht_sqlite(string $repoRoot, bool $persist): array {
     $abs = "$repoRoot/$rel";
     $manifest = envlite_manifest_load($repoRoot);
     if (!is_file($abs) || isset($manifest[$rel])) { return $manifest; }
-    $bytes = @file_get_contents($abs);
-    // Read failure: leave the file unrecorded rather than capturing the
-    // empty-string hash. clean will treat it as user-owned, which is correct.
-    if ($bytes === false) { return $manifest; }
-    $manifest[$rel] = hash('sha256', $bytes);
+    // hash_file streams the file in fixed-size chunks; using
+    // file_get_contents + hash('sha256', $bytes) would load the entire
+    // SQLite DB into memory and can exceed PHP's CLI memory_limit on a
+    // content-heavy dev install (millions of posts, media uploads
+    // streamed through WP imports). Returns false on read failure —
+    // treat that the same way we used to treat file_get_contents
+    // returning false: leave the file unrecorded so clean classifies it
+    // as user-owned (the correct outcome when envlite can't see the
+    // content authoritatively).
+    $hash = @hash_file('sha256', $abs);
+    if ($hash === false) { return $manifest; }
+    $manifest[$rel] = $hash;
     if ($persist) {
         envlite_manifest_save($repoRoot, $manifest);
     }
