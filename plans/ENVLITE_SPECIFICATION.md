@@ -44,20 +44,23 @@ unavailable.
 
 ### Invocation
 
-envlite is implemented as a PHP script at
-`tools/local-env/envlite.php` in the wordpress-develop checkout, with
-a small router asset at `tools/local-env/router.php` that `envlite up`
-loads into PHP's built-in dev server. The canonical (and only
-supported) invocation form is:
+envlite is implemented as a single PHP script (`envlite.php`) with a
+small router asset (`router.php`) that must live in the same
+directory. The pair is location-agnostic — invoke it from any path
+the user has placed it at, so long as the current working directory
+is a wordpress-develop checkout root. The canonical invocation form is:
 
 ```
-$ php tools/local-env/envlite.php <subcommand> [args...]
+$ php <path-to-envlite>/envlite.php <subcommand> [args...]
 ```
 
-PATH-based forms (`envlite <subcommand>` via a user-installed symlink
-or shebang execution) are out of scope; envlite does not install
-itself onto `PATH`, and the spec assumes the explicit `php …` form
-above. Throughout the rest of this document, `envlite <subcommand>` is
+When envlite is dropped at the wordpress-develop repo root (the
+documented quickstart layout — drop in or symlink the two files),
+this collapses to `php envlite.php <subcommand>`. PATH-based forms
+(`envlite <subcommand>` via a user-installed symlink or shebang
+execution) are out of scope; envlite does not install itself onto
+`PATH`, and the spec assumes the explicit `php …` form above.
+Throughout the rest of this document, `envlite <subcommand>` is
 shorthand for the full command line.
 
 ### Subcommands
@@ -177,8 +180,10 @@ case where interleaving would be unreadable.
 ### Dev-server launch
 
 After all setup phases succeed (and `--no-serve` was not passed), `up`
-launches `php -S 127.0.0.1:<port> -t src tools/local-env/router.php`
-in the foreground using the resolved port.
+launches `php -S 127.0.0.1:<port> -t src <path-to-envlite>/router.php`
+in the foreground using the resolved port. The router file resolves
+via `__DIR__/router.php` inside envlite, so it always sits next to
+envlite.php regardless of install path.
 
 On Unix, the launch uses `pcntl_exec(PHP_BINARY, …)`: the envlite PHP
 process is replaced in place by `php -S`, so there is no parent-child
@@ -212,9 +217,10 @@ phases complete. The port is still discovered/cached and
 `src/wp-config.php` still encodes that port — the only difference is
 that `php -S` is never started.
 
-The router is committed at `tools/local-env/router.php` alongside
-`envlite.php`; it is not installed into the repo, the manifest does
-not track it, and `clean` does not remove it. Its only request-time
+The router (`router.php`) ships in the same directory as `envlite.php`
+and travels with it; it is not installed into the wordpress-develop
+checkout, the manifest does not track it, and `clean` does not remove
+it. Its only request-time
 inputs are the request URI and `$_SERVER['DOCUMENT_ROOT']` — the
 absolute path PHP's built-in server resolved from its `-t` argument
 — so the router file's own filesystem location is deliberately
@@ -1371,7 +1377,7 @@ deleting outputs pass `--rebuild`.
     worktree against a different worktree's repo loaded the
     invoker's `wp-config.php` (with its `WP_HOME`/`WP_SITEURL`) and
     triggered a canonical-URL 301 to the wrong port.
-    `tools/local-env/tests/test_router.php` is the regression test;
+    `tests/test_router.php` is the regression test;
     it boots `php -S` against a fixture docroot wholly outside the
     router file's tree.
 17. **`up` is the only setup command.** Earlier drafts had `init`
@@ -1447,7 +1453,7 @@ deleting outputs pass `--rebuild`.
   `COMPOSER_HOME`; Composer's default applies.
 - Refresh the pinned SQLite drop-in. There is no `envlite update`
   subcommand. To pick up a newer plugin release, edit the SHA256 pin
-  (and any associated logic) in `tools/local-env/envlite.php`. The
+  (and any associated logic) in `envlite.php`. The
   next `envlite up` detects the pin change via
   `phase5.recorded_pin_sha` and re-downloads automatically; no manual
   `clean` is required. The pin is intentional: bumping it is a

@@ -8,7 +8,7 @@ function envlite_help_text(): string {
 		envlite — wordpress-develop dev environment setup
 
 		Usage:
-		  php tools/local-env/envlite.php <subcommand> [args]
+		  php envlite.php <subcommand> [args]
 
 		Commands:
 		  up [--port=N] [--no-build] [--no-serve] [--rebuild]

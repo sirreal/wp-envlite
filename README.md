@@ -39,8 +39,8 @@ anything is missing.
 ## Other commands
 
 ```sh
-php tools/local-env/envlite.php up --no-serve   # setup only, no server (CI)
-php tools/local-env/envlite.php clean           # remove envlite-created files
+php envlite.php up --no-serve   # setup only, no server (CI)
+php envlite.php clean           # remove envlite-created files
 ```
 
 `up` accepts:
