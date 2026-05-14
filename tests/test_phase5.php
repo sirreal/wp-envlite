@@ -27,6 +27,47 @@ function test_phase5_tripwire_passes_when_placeholder_present() {
     envlite_phase5_assert_placeholder($dir . '/db.copy'); // must not throw
 }
 
+function test_phase5_drop_recorded_pin_removes_pin_from_state() {
+    // Set up a state file with the pin and an unrelated key; verify the
+    // helper removes only the pin and leaves the rest intact. This is the
+    // pre-extraction invalidation step that prevents a partial extract
+    // from being skipped on the next run.
+    $dir = envlite_test_tmpdir('phase5-drop-pin');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    envlite_state_save($dir, [
+        'phase5.recorded_pin_sha' => str_repeat('a', 64),
+        'phase2.input_hash'       => str_repeat('b', 64),
+    ]);
+    envlite_phase5_drop_recorded_pin($dir);
+    $state = envlite_state_load($dir);
+    envlite_assert(!isset($state['phase5.recorded_pin_sha']),
+        'pin entry must be removed from on-disk state');
+    envlite_assert(isset($state['phase2.input_hash']),
+        'unrelated state entries must be preserved');
+}
+
+function test_phase5_drop_recorded_pin_is_idempotent_without_pin() {
+    // No-op when the pin is not recorded. The state file must not be
+    // rewritten — important because envlite_state_save is an atomic
+    // write that mutates an inode timestamp; a no-op should be a no-op.
+    $dir = envlite_test_tmpdir('phase5-drop-pin-noop');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    envlite_state_save($dir, ['other.key' => 'value']);
+    $statePath = "$dir/.cache/envlite/state";
+    $before = file_get_contents($statePath);
+    $mtimeBefore = filemtime($statePath);
+
+    // Sleep beyond filesystem mtime granularity (1s on HFS+/APFS in
+    // some configurations) so a rewrite would be detectable.
+    clearstatcache(true, $statePath);
+    envlite_phase5_drop_recorded_pin($dir);
+    clearstatcache(true, $statePath);
+
+    $after = file_get_contents($statePath);
+    envlite_assert_eq($before, $after,
+        'state file contents must be unchanged when pin is absent');
+}
+
 function test_phase5_tripwire_throws_when_placeholder_missing() {
     $dir = envlite_test_tmpdir('tripwire-missing');
     file_put_contents($dir . '/db.copy', '<?php // someone substituted the placeholder');

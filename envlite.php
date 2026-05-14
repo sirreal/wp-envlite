@@ -999,6 +999,26 @@ function envlite_phase5_assert_placeholder(string $dbCopyPath): void {
     }
 }
 
+/**
+ * Drop the phase 5 pin SHA from state before re-entering the
+ * download/extract path. Idempotent — no-op when the pin isn't recorded.
+ *
+ * Why this exists: extractTo writes the plugin tree incrementally and
+ * recreates `db.copy` early in the unzip stream. A mid-extraction
+ * failure can leave the alreadyInstalled check (manifest entry +
+ * db.copy present + pin matches) satisfied on the next `up`, which
+ * would then skip the re-download and run against a partial plugin
+ * tree. Invalidating the pin up front and only re-recording on a
+ * successful extract guarantees the next `up` re-attempts after any
+ * failure, matching the npm/composer/build phases' pattern.
+ */
+function envlite_phase5_drop_recorded_pin(string $repoRoot): void {
+    $state = envlite_state_load($repoRoot);
+    if (!isset($state['phase5.recorded_pin_sha'])) { return; }
+    unset($state['phase5.recorded_pin_sha']);
+    envlite_state_save($repoRoot, $state);
+}
+
 function envlite_phase5_install(string $repoRoot, bool $force, bool $rebuild = false): void {
     $pluginDir = "$repoRoot/src/wp-content/plugins/sqlite-database-integration";
     $dbCopy    = "$pluginDir/db.copy";
@@ -1021,6 +1041,12 @@ function envlite_phase5_install(string $repoRoot, bool $force, bool $rebuild = f
         if (is_dir($pluginDir) && !isset($manifest[$pluginRel])) {
             envlite_prompt_or_abort($force, 'up', 'overwrite plugin tree', $pluginRel, null, null);
         }
+        // Invalidate the recorded pin SHA before extraction. See
+        // envlite_phase5_drop_recorded_pin() for the failure mode this
+        // prevents. Refresh $state afterwards so the in-memory copy
+        // matches what we'll re-record on success below.
+        envlite_phase5_drop_recorded_pin($repoRoot);
+        unset($state['phase5.recorded_pin_sha']);
         $tmpZip = sys_get_temp_dir() . '/envlite-sqlite-' . bin2hex(random_bytes(4)) . '.zip';
         $bytes = envlite_http_get(ENVLITE_SQLITE_PLUGIN_URL);
         file_put_contents($tmpZip, $bytes);
