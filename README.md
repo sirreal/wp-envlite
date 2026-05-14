@@ -1,8 +1,9 @@
 # envlite
 
 A zero-daemon local environment for `wordpress-develop`. Runs WordPress
-on SQLite via PHP's built-in server, with phpunit pointed at the same
-SQLite database. No MySQL, no Docker, no MAMP.
+on SQLite via PHP's built-in server, with phpunit pointed at a separate
+SQLite test DB in the same checkout so it can drop tables without
+touching your dev content. No MySQL, no Docker, no MAMP.
 
 ## Quickstart
 
