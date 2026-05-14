@@ -101,6 +101,32 @@ function test_observe_ht_sqlite_transient_leaves_disk_manifest_unchanged() {
     envlite_assert_eq($original, $onDisk);
 }
 
+function test_observe_ht_sqlite_persist_throws_on_unwritable_cache_dir() {
+    // Persist mode calls envlite_manifest_save, which throws via
+    // envlite_atomic_write on a read-only `.cache/envlite/` directory.
+    // The up call site catches this throw and turns it into the documented
+    // `envlite up: ...` line + exit 1; this test pins the throw shape so a
+    // refactor of atomic_write does not regress that contract silently.
+    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) { return; }
+    $dir = envlite_test_tmpdir('observe-persist-readonly');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    mkdir("$dir/src/wp-content/database", 0755, true);
+    file_put_contents("$dir/src/wp-content/database/.ht.sqlite", 'sqlite-bytes');
+    chmod("$dir/.cache/envlite", 0555);
+    try {
+        $thrown = null;
+        try {
+            envlite_observe_ht_sqlite($dir, true);
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+        envlite_assert($thrown instanceof \RuntimeException,
+            'persist mode must propagate atomic-write failures as RuntimeException');
+    } finally {
+        chmod("$dir/.cache/envlite", 0755);
+    }
+}
+
 function test_observe_ht_sqlite_returns_existing_manifest_when_db_missing() {
     $dir = envlite_test_tmpdir('observe-no-db');
     mkdir("$dir/.cache/envlite", 0755, true);

@@ -1394,7 +1394,15 @@ function envlite_cmd_up(array $args, bool $force): int {
     envlite_phase0_run($repoRoot);
     // Persist the observation: ownership of the live DB carries across
     // runs, so subsequent up/clean invocations see it in the manifest.
-    envlite_observe_ht_sqlite($repoRoot, true);
+    // envlite_manifest_save can throw on a failed atomic write (read-only
+    // cache dir, full disk); surface that as the documented envlite error
+    // line + exit 1 rather than letting it escape as an uncaught PHP error.
+    try {
+        envlite_observe_ht_sqlite($repoRoot, true);
+    } catch (\Throwable $e) {
+        envlite_log('up', 'observe .ht.sqlite: ' . $e->getMessage());
+        return 1;
+    }
 
     // Phase 1 may write `.cache/envlite/port` and update the manifest, and
     // envlite_atomic_write throws RuntimeException on a failed temp-file
