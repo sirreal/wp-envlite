@@ -532,6 +532,15 @@ function envlite_phase0_run(string $repoRoot): void {
         envlite_log(null, 'preflight: PHP allow_url_fopen is disabled; required for HTTP fetches in Phase 5');
         exit(3);
     }
+    // proc_open is the substrate for every subprocess envlite spawns
+    // (node/npm/composer/php). Hardened php.ini configurations sometimes
+    // list it in `disable_functions`; reaching it via the version probe
+    // below would emit a raw PHP error instead of the documented
+    // preflight exit 3.
+    if (!function_exists('proc_open')) {
+        envlite_log(null, 'preflight: proc_open() is disabled; required to spawn node/npm/composer');
+        exit(3);
+    }
     $tools = [
         ['node',     ['node', '--version'],     [20, 10, 0]],
         ['npm',      ['npm', '--version'],      [10, 2, 3]],
@@ -621,7 +630,14 @@ function envlite_phase2_input_hash(string $repoRoot): ?string {
 function envlite_phase4_input_hash(string $repoRoot): ?string {
     $path = "$repoRoot/composer.json";
     if (!is_file($path)) { return null; }
-    return hash_file('sha256', $path);
+    // Mix the running PHP into the hash. wordpress-develop intentionally
+    // ships no composer.lock, so Composer resolves fresh on every install
+    // and can pick a different package set when the user switches PHP
+    // versions (different platform constraints in dependencies). Without
+    // this, swapping PHP and re-running `up` skips Phase 4 against a
+    // vendor/ tree resolved for the previous PHP — phpunit then fails
+    // against an incompatible autoload set.
+    return hash('sha256', PHP_VERSION . "\0" . file_get_contents($path));
 }
 
 /**

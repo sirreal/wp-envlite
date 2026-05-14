@@ -298,6 +298,13 @@ assumptions. Cheap to run and informative on failure.
    disabled those calls fail much later, after npm/composer/build have
    already run. A preflight check makes the failure mode "fix php.ini
    and re-run" rather than "lose minutes of install work first".
+
+   Phase 0 also verifies `function_exists('proc_open')`. Every
+   subprocess envlite spawns (node, npm, composer, php) goes through
+   `proc_open`; hardened php.ini configurations sometimes list it in
+   `disable_functions`, and hitting that via the version probe below
+   would surface a raw PHP error rather than the documented preflight
+   exit 3.
 4. `node`, `npm`, and `composer` are present and meet minimum versions:
    `node` ≥ 20.10, `npm` ≥ 10.2.3, `composer` ≥ 2. The `npm` floor matches
    `package.json`'s `engines.npm` so preflight catches the same constraint
@@ -566,6 +573,16 @@ hash of `composer.json` to `phase4.input_hash`. As with Phase 2, any
 pre-existing `phase4.input_hash` is dropped before the install runs
 so a mid-run failure cannot leave a populated `vendor/` paired with
 a still-matching hash. Recording happens only on exit 0.
+
+The hash is **not** a pure `hash_file('sha256', composer.json)`: the
+running `PHP_VERSION` is prepended so the hash changes whenever the
+PHP binary changes. wordpress-develop intentionally ships no
+`composer.lock`, so Composer resolves dependencies fresh on every
+install and can pick a different set when the platform changes
+(packages with PHP-version constraints). Without the version mix-in
+the next `up` after switching PHP would skip Phase 4 against a
+`vendor/` resolved for the previous PHP — an incompatibility that
+surfaces as runtime errors in Phase 8 / phpunit.
 
 The skip is blind to the contents of `vendor/` once the directory
 exists, on the same reasoning as Phase 2. Note the absence of a

@@ -28,10 +28,14 @@ function test_phase2_input_hash_matches_sha256_of_lockfile() {
     );
 }
 
-function test_phase4_input_hash_matches_sha256_of_composer_json() {
+function test_phase4_input_hash_mixes_php_version_with_composer_json() {
+    // wordpress-develop has no composer.lock, so the input hash must
+    // change when the PHP binary changes — otherwise switching PHP
+    // versions skips Phase 4 against a vendor/ resolved for the
+    // previous platform.
     $dir = envlite_test_skip_make_repo('phase4-cj', null, '{"name":"foo"}');
     envlite_assert_eq(
-        hash('sha256', '{"name":"foo"}'),
+        hash('sha256', PHP_VERSION . "\0" . '{"name":"foo"}'),
         envlite_phase4_input_hash($dir)
     );
 }
