@@ -589,9 +589,12 @@ before being overwritten; `--force` answers yes to every such prompt.
    `--rebuild` also forces re-entry into steps 2–4 unconditionally.
 2. Download the plugin zip via PHP HTTP (`file_get_contents` with a
    stream context that follows redirects, sets a User-Agent, and
-   times out at 30 s) from
-   `https://downloads.wordpress.org/plugin/sqlite-database-integration.zip`
-   to a temp file under `sys_get_temp_dir()`.
+   times out at 30 s) from a versioned wordpress.org URL of the form
+   `https://downloads.wordpress.org/plugin/sqlite-database-integration.<version>.zip`
+   to a temp file under `sys_get_temp_dir()`. The version segment is
+   required: the unsuffixed `.zip` URL is a moving "latest" pointer,
+   so pairing it with a fixed SHA256 pin would break fresh installs
+   on every upstream release.
 3. Verify the downloaded **zip's** SHA256 with `hash_file('sha256', ...)`
    against the pinned value
    `44be096a14ebcea424b5e4bf764436ec85fb067f74ab47822c4c5346df21591e`.

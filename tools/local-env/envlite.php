@@ -806,7 +806,12 @@ function envlite_phase3_build_dev(
     envlite_state_save($repoRoot, $state);
 }
 
-const ENVLITE_SQLITE_PLUGIN_URL = 'https://downloads.wordpress.org/plugin/sqlite-database-integration.zip';
+// Versioned (immutable) URL. The unsuffixed
+// .../sqlite-database-integration.zip URL points to whatever wordpress.org
+// publishes as latest, so its SHA256 changes on every plugin release —
+// pairing it with a fixed pin breaks fresh installs whenever upstream
+// ships a new version. The versioned URL is content-addressable.
+const ENVLITE_SQLITE_PLUGIN_URL = 'https://downloads.wordpress.org/plugin/sqlite-database-integration.2.2.23.zip';
 const ENVLITE_SQLITE_PLUGIN_SHA256 = '44be096a14ebcea424b5e4bf764436ec85fb067f74ab47822c4c5346df21591e';
 const ENVLITE_SQLITE_PLACEHOLDER = '{SQLITE_IMPLEMENTATION_FOLDER_PATH}';
 
