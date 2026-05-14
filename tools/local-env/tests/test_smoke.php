@@ -23,9 +23,13 @@ function envlite_test_make_fixture_repo(): string {
 function test_smoke_phases5_through_7_then_clean() {
     $dir = envlite_test_make_fixture_repo();
 
-    // Pre-record the plugin tree as envlite-owned so Phase 5 takes the skip branch.
+    // Pre-record the plugin tree as envlite-owned AND record the pin SHA so
+    // Phase 5 takes the skip branch (manifest + db.copy + pin all required).
+    // Without the pin, phase 5 falls through to the HTTP download path and
+    // this test becomes network-dependent.
     $manifest = ['src/wp-content/plugins/sqlite-database-integration' => 'dir'];
     envlite_manifest_save($dir, $manifest);
+    envlite_state_save($dir, ['phase5.recorded_pin_sha' => ENVLITE_SQLITE_PLUGIN_SHA256]);
 
     // Drive Phases 5–7 with --force (no TTY in test).
     envlite_phase5_install($dir, true);
