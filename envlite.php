@@ -151,6 +151,23 @@ function envlite_atomic_write(string $path, string $bytes): string {
     fflush($fh);
     if (function_exists('fsync')) { @fsync($fh); }
     fclose($fh);
+    // Clear a non-regular destination before the rename. PHP's rename()
+    // can replace a regular file or a non-existent path atomically, but
+    // it cannot overwrite a directory (POSIX EISDIR). Callers that hit
+    // this path have already cleared ownership: Phases 5–7 prompted the
+    // user (or honored --force) before reaching atomic_write, so by
+    // contract any non-regular entry sitting in our way is something
+    // the user agreed to overwrite. Internal `.cache/envlite/*` writes
+    // don't go through ownership, but envlite owns that subtree
+    // wholesale per the state-directory contract, so blindly clearing
+    // anything in our way there is also correct. Symlinks are unlinked
+    // (not followed); the existing `rrmdir` helper already refuses to
+    // recurse through symlinks at its top level.
+    if (is_link($path)) {
+        @unlink($path);
+    } elseif (is_dir($path)) {
+        envlite_rrmdir($path);
+    }
     if (!rename($tmp, $path)) {
         @unlink($tmp);
         throw new \RuntimeException("rename failed: $tmp -> $path");

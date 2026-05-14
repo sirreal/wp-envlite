@@ -54,6 +54,45 @@ function test_atomic_write_does_not_touch_preexisting_file_at_legacy_tmp_name() 
         'legacy .tmp sibling must not be clobbered by the atomic write');
 }
 
+function test_atomic_write_replaces_directory_at_destination() {
+    // Round 8 regression: if the user mkdir'd over a path envlite expects
+    // to be a regular file (e.g. `src/wp-config.php` is a directory), the
+    // ownership check correctly classified it as drifted/unowned and the
+    // caller's prompt accepted the overwrite. But the subsequent
+    // rename($tmp, $path) failed because POSIX rename can't overlay a
+    // directory. The phase aborted after consent, leaving the user
+    // confused. Now atomic_write clears the non-regular destination
+    // (rrmdir for dirs, unlink for symlinks) before the rename.
+    $dir = envlite_test_tmpdir('atomic-replace-dir');
+    $path = $dir . '/wp-config.php';
+    mkdir($path);
+    file_put_contents("$path/stray-file", 'user content the directory swallowed');
+    envlite_atomic_write($path, "<?php // envlite\n");
+    envlite_assert(is_file($path) && !is_dir($path),
+        'destination must become a regular file');
+    envlite_assert_eq("<?php // envlite\n", file_get_contents($path));
+}
+
+function test_atomic_write_replaces_symlink_at_destination() {
+    // Companion case: if the user replaced an envlite-managed file with
+    // a symlink (to anywhere — broken, to a dir, to another file), the
+    // ownership check classifies it as drifted and after consent
+    // atomic_write must clear the symlink rather than follow it (which
+    // would clobber the symlink target).
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_tmpdir('atomic-replace-symlink');
+    $path = $dir . '/wp-config.php';
+    $target = $dir . '/external-user-file';
+    file_put_contents($target, 'EXTERNAL_USER_DATA');
+    symlink($target, $path);
+    envlite_atomic_write($path, "<?php // envlite\n");
+    envlite_assert(is_file($path) && !is_link($path),
+        'destination must become a regular file, not the symlink');
+    envlite_assert_eq("<?php // envlite\n", file_get_contents($path));
+    envlite_assert_eq('EXTERNAL_USER_DATA', file_get_contents($target),
+        'symlink target must be untouched (no truncate-through-symlink)');
+}
+
 function test_atomic_write_does_not_follow_symlink_at_legacy_tmp_name() {
     // Companion to the above: a symlink at the legacy `.tmp` path
     // pointing to an external user file must be left intact (no

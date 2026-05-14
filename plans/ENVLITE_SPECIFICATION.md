@@ -1134,6 +1134,15 @@ pre-existing user file or symlink at the temp path collide with
 envlite's write — `wb` would have truncated it (or followed the
 symlink to truncate its target) before ownership could be evaluated.
 
+Before the `rename()`, atomic_write clears a non-regular destination
+(symlinks via `unlink`, directories via the symlink-aware `rrmdir`).
+POSIX `rename()` can replace a regular file or a missing path
+atomically but refuses to overwrite a directory; without this step,
+Phases 5–7 would abort *after* the ownership prompt approved the
+overwrite — leaving the user confused about why their consent did
+not take effect. Symlinks are unlinked, never followed, so the
+symlink target is never truncated.
+
 **Ownership decisions** (consulted by Phases 5–7):
 
 - Nothing on disk, no manifest entry → absent; write directly.
