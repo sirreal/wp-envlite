@@ -9,7 +9,7 @@ function envlite_test_make_fixture_repo(): string {
     file_put_contents("$dir/composer.json", '{}');
     file_put_contents("$dir/tests/phpunit/includes/bootstrap.php", '<?php');
     // Real samples, copied from the test repo so substitutions are exercised.
-    $repoRoot = dirname(__DIR__, 3);
+    $repoRoot = dirname(__DIR__);
     copy("$repoRoot/wp-config-sample.php",       "$dir/wp-config-sample.php");
     copy("$repoRoot/wp-tests-config-sample.php", "$dir/wp-tests-config-sample.php");
     // Pre-stage the SQLite plugin so Phase 5 hits the skip-download branch.

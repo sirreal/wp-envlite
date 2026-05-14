@@ -5,10 +5,10 @@ function test_dev_server_argv_targets_correct_port_root_router() {
     envlite_assert_eq('127.0.0.1:8421', $argv[1]);
     envlite_assert_eq('-t', $argv[2]);
     envlite_assert_eq('src', $argv[3]);
-    // The router is the absolute path to tools/local-env/router.php.
+    // The router is the absolute path to router.php.
     envlite_assert(
-        substr($argv[4], -strlen('/tools/local-env/router.php')) === '/tools/local-env/router.php',
-        'router path must end with tools/local-env/router.php'
+        substr($argv[4], -strlen('/router.php')) === '/router.php',
+        'router path must end with /router.php'
     );
     envlite_assert_eq(5, count($argv));
 }

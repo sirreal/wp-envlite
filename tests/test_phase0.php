@@ -1,7 +1,7 @@
 <?php
 function test_phase0_cwd_check_passes_for_real_repo() {
     // The test runs inside the repo. Use the path that contains the runner.
-    $root = dirname(__DIR__, 3); // tests/ -> local-env/ -> tools/ -> repo
+    $root = dirname(__DIR__); // tests/ -> repo
     envlite_assert(envlite_phase0_is_wordpress_develop($root), "expected $root to be a WP-develop checkout");
 }
 
