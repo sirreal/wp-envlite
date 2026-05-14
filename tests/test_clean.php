@@ -203,6 +203,29 @@ function test_rrmdir_refuses_to_recurse_into_symlinked_directory() {
         'rrmdir must not recurse through the symlink to delete deeper contents');
 }
 
+function test_clean_apply_removes_broken_symlink_manifest_entries() {
+    // Round 8 regression: a manifest entry replaced by a broken (dangling)
+    // symlink returns false for both file_exists (follows symlinks) and
+    // is_dir, so the pre-delete existence check skipped it. Clean would
+    // wipe `.cache/envlite/` at the end and leave the broken symlink as
+    // an orphan with no remaining record that envlite ever owned the
+    // path. Including is_link in the check makes the unlink fire.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_tmpdir('clean-broken-symlink');
+    symlink("$dir/does-not-exist", "$dir/wp-tests-config.php");
+    envlite_assert(is_link("$dir/wp-tests-config.php"),
+        'fixture must have a dangling symlink to start');
+    envlite_assert(!file_exists("$dir/wp-tests-config.php"),
+        'file_exists must follow the broken symlink to false');
+
+    $manifest = ['wp-tests-config.php' => str_repeat('a', 64)];
+    $failed = envlite_clean_apply($dir, envlite_clean_collect($manifest));
+
+    envlite_assert_eq([], $failed, 'broken-symlink entry must be removed cleanly');
+    envlite_assert(!is_link("$dir/wp-tests-config.php"),
+        'dangling symlink must be unlinked by clean_apply');
+}
+
 function test_clean_apply_reports_paths_that_remain_after_failed_deletion() {
     if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) {
         // Root can delete read-only-parent files; this test needs a

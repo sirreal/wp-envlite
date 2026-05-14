@@ -1736,13 +1736,19 @@ function envlite_clean_apply(string $repoRoot, array $paths): array {
     $failed = [];
     foreach ($paths as $rel) {
         $abs = "$repoRoot/$rel";
-        if (!file_exists($abs) && !is_dir($abs)) { continue; }
+        // Use the same "anything is here" predicate the ownership path uses:
+        // file_exists follows symlinks (returns false for broken symlinks),
+        // so a manifest entry replaced by a dangling symlink would slip past
+        // a `!file_exists && !is_dir` check, leaving the symlink behind as
+        // an orphan once the manifest itself is wiped by clean. is_link
+        // catches that case.
+        if (!file_exists($abs) && !is_dir($abs) && !is_link($abs)) { continue; }
         if (is_dir($abs) && !is_link($abs)) {
             envlite_rrmdir($abs);
         } else {
             @unlink($abs);
         }
-        if (file_exists($abs) || is_dir($abs)) {
+        if (file_exists($abs) || is_dir($abs) || is_link($abs)) {
             $failed[] = $rel;
         }
     }
