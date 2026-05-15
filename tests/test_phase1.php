@@ -146,8 +146,14 @@ function test_up_with_bound_explicit_port_leaves_manifest_unmutated() {
         );
         envlite_assert_eq(1, $exit,
             "envlite up --port=$boundPort must exit 1 when bound; stderr: " . substr($stderr, 0, 200));
-        envlite_assert(strpos($stderr, 'phase 1') !== false,
-            'failure must be labeled phase 1; got: ' . substr($stderr, 0, 200));
+        // Spec contract: bind failure produces the exact line
+        // `envlite up: failed to bind 127.0.0.1:<port>` — no phase prefix,
+        // no remediation hint. The earlier assertion that "phase 1"
+        // appeared anywhere in stderr locked in the wrong message.
+        envlite_assert(strpos($stderr, "envlite up: failed to bind 127.0.0.1:$boundPort") !== false,
+            "stderr must contain the exact spec bind-failure line; got: " . substr($stderr, 0, 300));
+        envlite_assert(strpos($stderr, 'phase 1') === false,
+            'spec bind-failure line must NOT carry a phase prefix; got: ' . substr($stderr, 0, 200));
 
         // The manifest must not exist at all — or if .cache/envlite/ was
         // created by an earlier write attempt, the manifest must not
