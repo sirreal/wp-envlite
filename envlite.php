@@ -4,9 +4,7 @@ const ENVLITE_VERSION = '0.1.0';
 const ENVLITE_BUILD   = '';
 
 function envlite_version_string(): string {
-	$version = ENVLITE_VERSION;
-	$build   = ENVLITE_BUILD;
-	return $version . ($build !== '' ? " ($build)" : '');
+	return ENVLITE_VERSION . (ENVLITE_BUILD !== '' ? ' (' . ENVLITE_BUILD . ')' : '');
 }
 
 function envlite_help_text(): string {
