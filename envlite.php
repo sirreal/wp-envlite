@@ -184,7 +184,8 @@ function envlite_write_managed_file(
     array &$manifest,
     string $relPath,
     string $bytes,
-    string $absPath
+    string $absPath,
+    ?string $expectedOwnership = null
 ): void {
     // Pick the manifest-vs-content write order based on the current
     // ownership state of $absPath:
@@ -213,6 +214,22 @@ function envlite_write_managed_file(
     //     is the safer failure mode.
     [$exists, $current] = envlite_path_inspect($absPath);
     $ownership = envlite_ownership($manifest, $relPath, $exists, $current);
+    // TOCTOU defense: the CALLER has already prompted (or honored
+    // --force) against an earlier ownership read. If the destination
+    // changed shape between that read and now — e.g. a race swapped
+    // the path from `owned_clean` (no prompt fired) to `unowned`
+    // (someone replaced our file with their own) — the caller's
+    // consent doesn't cover the new state and proceeding would
+    // silently overwrite user content. Abort with the
+    // envlite-prefixed RuntimeException so envlite_phase_guard
+    // surfaces a phase-N error; the user can re-run after
+    // investigating.
+    if ($expectedOwnership !== null && $ownership !== $expectedOwnership) {
+        throw new \RuntimeException(
+            "managed-write: $relPath ownership changed from " .
+            "$expectedOwnership to $ownership; refusing to write"
+        );
+    }
 
     if ($ownership === 'owned_drifted' || $ownership === 'unowned') {
         // Content-first. atomic_write may throw — that's the caller's
@@ -1826,10 +1843,23 @@ function envlite_phase5_install(
     // check only ONCE before the predicate; an ancestor symlink swap
     // between that check and this read would let the cached path
     // read db.copy through a symlink target outside the checkout and
-    // write db.php from external content. The pre-extract path
-    // already runs apply_extract's own checks, but this revalidation
-    // covers both code paths uniformly.
+    // write db.php from external content.
     envlite_phase5_assert_parent_inside_repo($repoRoot, dirname($pluginDir));
+    // Also re-stat the plugin directory itself. The round-25/26/27
+    // checks happen earlier (before the alreadyInstalled predicate
+    // and inside apply_extract); between them and this db.copy read,
+    // a race could replace $pluginDir with a symlink to a directory
+    // containing its own db.copy. `is_file($dbCopy)` and
+    // `file_get_contents($dbCopy)` would then follow the symlink and
+    // stamp db.php from external content despite envlite's symlink
+    // refusal contract for the plugin path. Refuse if anything other
+    // than a real directory is here.
+    clearstatcache(true);
+    if (is_link($pluginDir) || !is_dir($pluginDir)) {
+        throw new \RuntimeException(
+            "phase 5: plugin path $pluginDir is not a real directory before db.copy read; refusing"
+        );
+    }
     if (!is_file($dbCopy)) {
         throw new \RuntimeException("phase 5: db.copy missing at $dbCopy after extraction");
     }
@@ -1849,7 +1879,9 @@ function envlite_phase5_install(
     }
     // Manifest-first write with rollback on failure. See
     // envlite_write_managed_file for the failure-mode rationale.
-    envlite_write_managed_file($repoRoot, $manifest, $dbPhpRel, $dbBytes, $dbPhpAbs);
+    // Pass the ownership we just authorized so the helper aborts on
+    // a race that swapped the path between our prompt and the write.
+    envlite_write_managed_file($repoRoot, $manifest, $dbPhpRel, $dbBytes, $dbPhpAbs, $ownership);
 
     // Step 6: tripwire.
     envlite_phase5_assert_placeholder($dbCopy);
@@ -1930,8 +1962,10 @@ function envlite_phase6_install(string $repoRoot, bool $force): void {
     } elseif ($ownership === 'unowned') {
         envlite_prompt_or_abort($force, 'up', 'overwrite unowned file', $outRel, null, null);
     }
-    // Manifest-first write with rollback on failure.
-    envlite_write_managed_file($repoRoot, $manifest, $outRel, $rendered, $outAbs);
+    // Manifest-first write with rollback on failure. Pass the
+    // authorized ownership so the helper detects TOCTOU races that
+    // swap the destination between the prompt above and the write.
+    envlite_write_managed_file($repoRoot, $manifest, $outRel, $rendered, $outAbs, $ownership);
 }
 
 const ENVLITE_SALT_URL = 'https://api.wordpress.org/secret-key/1.1/salt/';
@@ -2042,8 +2076,9 @@ function envlite_phase7_install(string $repoRoot, int $port, bool $force): void 
     } elseif ($ownership === 'unowned') {
         envlite_prompt_or_abort($force, 'up', 'overwrite unowned file', $outRel, null, null);
     }
-    // Manifest-first write with rollback on failure.
-    envlite_write_managed_file($repoRoot, $manifest, $outRel, $rendered, $outAbs);
+    // Manifest-first write with rollback on failure. Pass the
+    // authorized ownership so the helper detects TOCTOU races.
+    envlite_write_managed_file($repoRoot, $manifest, $outRel, $rendered, $outAbs, $ownership);
 }
 
 /**

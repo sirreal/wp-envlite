@@ -93,6 +93,52 @@ function test_atomic_write_replaces_symlink_at_destination() {
         'symlink target must be untouched (no truncate-through-symlink)');
 }
 
+function test_write_managed_file_aborts_when_ownership_changes_under_caller() {
+    // Round 33 P2 regression: the caller's prompt-or-bypass decision
+    // is based on an earlier ownership read; if a race changes the
+    // destination between that read and the helper's order-decision,
+    // the helper would proceed with content-first (or manifest-first)
+    // based on the NEW ownership, silently overwriting whatever
+    // replaced the file. The helper now takes an $expectedOwnership
+    // parameter and aborts when the current state disagrees.
+    //
+    // Build a fixture where the caller would have observed
+    // 'owned_clean' (envlite-owned file with matching hash), but by
+    // the time the helper runs the file's bytes are different
+    // (someone overwrote with new content) — the helper now sees
+    // 'owned_drifted' and must abort rather than proceed.
+    $dir = envlite_test_tmpdir('write-managed-ownership-race');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    file_put_contents("$dir/output.txt", 'envlite-original');
+    $envliteHash = hash('sha256', 'envlite-original');
+    $manifest = ['output.txt' => $envliteHash];
+    envlite_manifest_save($dir, $manifest);
+
+    // Caller would have computed ownership 'owned_clean' against
+    // these bytes. Now simulate a race that replaced the file with
+    // unrelated user content (drifted from envlite's recorded hash).
+    file_put_contents("$dir/output.txt", 'user-replaced-mid-flight');
+
+    $thrown = null;
+    try {
+        envlite_write_managed_file(
+            $dir, $manifest, 'output.txt', "envlite-new-content\n",
+            "$dir/output.txt", 'owned_clean'
+        );
+    } catch (\RuntimeException $e) {
+        $thrown = $e;
+    }
+    envlite_assert($thrown !== null,
+        'write_managed_file must abort on ownership divergence from caller');
+    envlite_assert(strpos($thrown->getMessage(), 'ownership changed from owned_clean') !== false,
+        'error must name the divergence; got: ' . $thrown->getMessage());
+
+    // The user's mid-flight content must survive — the helper refused
+    // to overwrite without re-prompt.
+    envlite_assert_eq('user-replaced-mid-flight', file_get_contents("$dir/output.txt"),
+        'user-replaced content must NOT be clobbered by the helper');
+}
+
 function test_write_managed_file_content_first_for_unowned_overwrite() {
     // Round 32 P2 regression: round-29's manifest-first ordering
     // poisoned the manifest with envlite's new hash *before*
