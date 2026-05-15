@@ -48,6 +48,14 @@ function envlite_log(?string $subcommand, string $message): void {
 }
 
 function envlite_path_to_posix(string $path): string {
+    // Only Windows mixes `\` and `/` as path separators. On Unix, `\` is
+    // a legal filename character — rewriting it would corrupt the
+    // computed state-directory and manifest-key paths for any checkout
+    // sitting at `/tmp/wp\dev` and similar. Phases would then write to
+    // the actual cwd while envlite's `.cache/envlite/...` paths landed
+    // somewhere else, and `clean` invoked from the real path could not
+    // find the state it had created.
+    if (PHP_OS_FAMILY !== 'Windows') { return $path; }
     return str_replace('\\', '/', $path);
 }
 
