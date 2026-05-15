@@ -1734,6 +1734,8 @@ function envlite_cmd_up(array $args, bool $force): int {
 
     envlite_phase0_run($repoRoot);
 
+    fwrite(STDERR, "envlite up: getting ready\u{2026}\n");
+
     // Phase 1 may write `.cache/envlite/port` and update the manifest, and
     // envlite_atomic_write throws RuntimeException on a failed temp-file
     // write or rename (permissions, full disk, read-only checkout). Wrap
@@ -1744,7 +1746,6 @@ function envlite_cmd_up(array $args, bool $force): int {
         $resolvedPort = envlite_phase1_discover_port($repoRoot, $port);
     });
     if ($rc !== 0) { return $rc; }
-    fwrite(STDERR, "envlite up: port $resolvedPort\n");
 
     // Persist the .ht.sqlite observation now that Phase 1 has succeeded
     // and we are committed to running setup. The spec's bind-failure
@@ -1815,7 +1816,7 @@ function envlite_cmd_up(array $args, bool $force): int {
     }
 
     if ($noServe) {
-        fwrite(STDERR, "envlite up: setup complete (--no-serve; not launching dev server)\n");
+        fwrite(STDERR, "envlite up: environment ready (--no-serve; not starting dev server)\n");
         return 0;
     }
 
@@ -1824,10 +1825,10 @@ function envlite_cmd_up(array $args, bool $force): int {
         return 1;
     }
 
-    fwrite(STDERR, "envlite up: serving http://127.0.0.1:$resolvedPort/ (admin / password)\n");
+    fwrite(STDERR, "envlite up: environment ready, starting dev server on http://127.0.0.1:$resolvedPort/ (admin / password)\n");
     // Hand off to the dev-server launcher. pcntl on Unix means this function
-    // never returns on success; the "serving …" line above is the last thing
-    // envlite itself prints.
+    // never returns on success; the line above is the last thing envlite
+    // itself prints.
     return envlite_run_dev_server($repoRoot, $resolvedPort);
 }
 
