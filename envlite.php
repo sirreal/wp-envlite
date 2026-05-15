@@ -204,7 +204,13 @@ function envlite_atomic_write(string $path, string $bytes): string {
     } elseif (is_dir($path)) {
         envlite_rrmdir($path);
     }
-    if (!rename($tmp, $path)) {
+    // @-suppress on rename: PHP's default warning is unprefixed and
+    // would land on stderr in violation of the spec's "every diagnostic
+    // line carries the envlite prefix" contract. The handled
+    // RuntimeException below flows through envlite_phase_guard (or the
+    // caller's own try/catch) and gets the proper `envlite <sub>:
+    // phase N: rename failed: …` shape.
+    if (!@rename($tmp, $path)) {
         @unlink($tmp);
         throw new \RuntimeException("rename failed: $tmp -> $path");
     }
