@@ -1,0 +1,57 @@
+name: release-phar
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: gd, pdo_sqlite, sqlite3, zip, simplexml, pcntl
+          ini-values: phar.readonly=0
+          coverage: none
+
+      - name: Run tests
+        run: php tests/run.php
+
+      - name: Build phar
+        run: php bin/build-phar.php
+
+      - name: Verify tag matches ENVLITE_VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(grep -oP "ENVLITE_VERSION\s*=\s*'\K[^']+" envlite.php)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match ENVLITE_VERSION ($version); expected v$version" >&2
+            exit 1
+          fi
+
+      - name: Publish phar to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" envlite.phar --clobber
+
+      - name: Upload phar as a workflow artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: envlite-phar
+          path: envlite.phar
+          if-no-files-found: error

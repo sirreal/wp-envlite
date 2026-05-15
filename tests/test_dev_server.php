@@ -54,3 +54,20 @@ function test_dev_server_proc_stream_propagates_child_exit_with_dev_server_argv_
     $exit = envlite_proc_stream($argv);
     envlite_assert_eq(0, $exit, 'proc_open fallback must propagate child exit code');
 }
+
+function test_dev_server_router_from_source_uses_sibling_router_php() {
+    // Not in a phar: the router is router.php beside envlite.php.
+    envlite_assert_eq(
+        '/opt/wp-envlite/router.php',
+        envlite_dev_server_router('', '/opt/wp-envlite')
+    );
+}
+
+function test_dev_server_router_from_phar_uses_phar_path() {
+    // In a phar: php -S cannot resolve a phar:// router path, so the phar's
+    // own file path is handed over; its stub dispatches to the bundled router.
+    envlite_assert_eq(
+        '/usr/local/bin/envlite',
+        envlite_dev_server_router('/usr/local/bin/envlite', '/anything')
+    );
+}
