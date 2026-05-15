@@ -1177,6 +1177,55 @@ function envlite_phase5_path_signature(string $path): ?string {
 }
 
 /**
+ * Run the at-commit-point part of Phase 5: TOCTOU re-check, clear,
+ * extract. Separated from envlite_phase5_install so the guard is
+ * unit-testable with a caller-supplied ZipArchive instead of having
+ * to fetch + SHA-verify against the live wordpress.org pin.
+ *
+ * Contract:
+ *   - The caller has already prompted (or honored --force), staged the
+ *     verified zip, and opened the ZipArchive. $initialSignature is
+ *     the path identity captured at scan time.
+ *   - The caller holds the zip handle's lifetime; this function does
+ *     NOT close it. (Closing belongs to the caller's `finally` so the
+ *     archive is released before the temp zip is unlinked — important
+ *     on Windows where an open archive locks the file.)
+ *
+ * Throws RuntimeException with the `phase 5:` prefix on either failure
+ * mode (identity changed, extractTo failed). Both throws happen before
+ * any subsequent caller-side state writes — manifest_save / state_save
+ * run only after this returns cleanly.
+ */
+function envlite_phase5_apply_extract(
+    string $repoRoot,
+    string $pluginDir,
+    ?string $initialSignature,
+    \ZipArchive $zip
+): void {
+    // Re-check the plugin path identity. The ownership prompt fired
+    // against the specific entry present at the initial scan; any
+    // create/remove/swap during the fetch window invalidates that
+    // consent.
+    $currentSignature = envlite_phase5_path_signature($pluginDir);
+    if ($currentSignature !== $initialSignature) {
+        throw new \RuntimeException(
+            "phase 5: plugin path $pluginDir changed identity during fetch; refusing to overwrite without re-prompt"
+        );
+    }
+    // Strict pre-extract clear of any entry at the plugin path. The
+    // helper re-stats after each removal to defend against silent
+    // @unlink/rrmdir failure and TOCTOU.
+    envlite_phase5_clear_plugin_blocker($pluginDir);
+    // extractTo returns false on partial/failed extraction. Throwing
+    // here means no subsequent state writes (manifest/state) record
+    // the broken tree.
+    $extracted = $zip->extractTo("$repoRoot/src/wp-content/plugins/");
+    if ($extracted !== true) {
+        throw new \RuntimeException("phase 5: ZipArchive::extractTo failed for $pluginDir");
+    }
+}
+
+/**
  * Strict pre-extract cleanup for the Phase 5 plugin path. The caller
  * holds the user's consent (prompt approved or --force); this function
  * makes sure the path is **empty** before extractTo runs:
@@ -1301,46 +1350,26 @@ function envlite_phase5_install(
             if ($zip->open($tmpZip) !== true) {
                 throw new \RuntimeException("ZipArchive::open failed: $tmpZip");
             }
-            // Invalidate the recorded pin SHA *here*, immediately before
-            // extractTo touches disk. See envlite_phase5_drop_recorded_pin()
-            // for the failure mode this prevents. Doing it earlier — before
-            // the fetch/SHA/zip-open steps — would invalidate the pin even
-            // when the existing plugin tree was never modified (offline
-            // re-run, transient HTTP failure, SHA mismatch from a partial
-            // download), forcing every subsequent `up` to re-fetch.
-            envlite_phase5_drop_recorded_pin($repoRoot);
-            unset($state['phase5.recorded_pin_sha']);
-            // TOCTOU defense: re-check the plugin path identity and bail
-            // if it has changed since the initial scan. The ownership
-            // prompt above (or --force) authorized modification of
-            // *the specific entry that existed then* — fetch + SHA
-            // verify + zip open is a wide enough window for another
-            // process or the user themselves to create, remove, or
-            // swap the entry. Identity comparison uses inode + device
-            // (see envlite_phase5_path_signature), so a same-shape
-            // swap (real-dir A replaced by real-dir B) is detected
-            // too — boolean shape flags alone would miss that case.
-            $currentSignature = envlite_phase5_path_signature($pluginDir);
-            if ($currentSignature !== $initialSignature) {
-                throw new \RuntimeException(
-                    "phase 5: plugin path $pluginDir changed identity during fetch; refusing to overwrite without re-prompt"
-                );
-            }
-            // Strict pre-extract clear of any entry at the plugin path.
-            // Re-stats inside the helper after each removal to defend
-            // against silent @unlink/rrmdir failure (round 10) and
-            // races (round 17). extractTo would otherwise write
-            // through a surviving symlink or fail mid-extract.
-            envlite_phase5_clear_plugin_blocker($pluginDir);
-            // extractTo returns false on partial/failed extraction (permissions,
-            // disk full, malformed entries). Recording the directory as
-            // envlite-owned in that case would let a later run satisfy the
-            // db.copy short-circuit and skip re-downloading, leaving a
-            // half-extracted plugin tree in place.
-            $extracted = $zip->extractTo("$repoRoot/src/wp-content/plugins/");
-            $zip->close();
-            if ($extracted !== true) {
-                throw new \RuntimeException("ZipArchive::extractTo failed for $tmpZip");
+            try {
+                // Invalidate the recorded pin SHA *here*, immediately
+                // before extractTo touches disk. Doing it earlier — before
+                // fetch/SHA/zip-open — would invalidate the pin even when
+                // the existing plugin tree was never modified (offline
+                // re-run, transient HTTP failure, SHA mismatch on a
+                // partial download).
+                envlite_phase5_drop_recorded_pin($repoRoot);
+                unset($state['phase5.recorded_pin_sha']);
+                // TOCTOU re-check + clear + extract is delegated to a
+                // helper so the guard is unit-testable without going
+                // through the live wordpress.org fetch. See
+                // envlite_phase5_apply_extract() for the full contract.
+                envlite_phase5_apply_extract($repoRoot, $pluginDir, $initialSignature, $zip);
+            } finally {
+                // Always close the archive before the outer finally
+                // unlinks the temp zip. On Windows an open archive locks
+                // the underlying file and the unlink would fail, leaving
+                // the downloaded zip in sys_get_temp_dir() forever.
+                $zip->close();
             }
         } finally {
             @unlink($tmpZip);

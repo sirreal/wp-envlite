@@ -98,6 +98,97 @@ function test_phase5_path_signature_changes_when_dir_replaced_by_symlink() {
         'shape-change swap must change signature');
 }
 
+function envlite_test_phase5_build_minimal_plugin_zip(string $zipPath): void {
+    // Build a minimal zip resembling the real sqlite-database-integration
+    // archive: a top-level directory with a `db.copy` file. Used by the
+    // apply_extract integration tests below — they need a real ZipArchive
+    // handle that can extractTo successfully, but a fully valid SQLite
+    // drop-in (matching the SHA pin) is impossible to fabricate without
+    // the actual upstream bytes.
+    $zip = new \ZipArchive();
+    envlite_assert($zip->open($zipPath, \ZipArchive::CREATE) === true,
+        "could not create test zip at $zipPath");
+    $zip->addEmptyDir('sqlite-database-integration');
+    $zip->addFromString('sqlite-database-integration/db.copy',
+        "<?php // {SQLITE_IMPLEMENTATION_FOLDER_PATH}\n");
+    $zip->close();
+}
+
+function test_phase5_apply_extract_throws_when_signature_mismatched() {
+    // Round 19 integration regression: round-18 added the identity-based
+    // TOCTOU check inside envlite_phase5_install, but the new tests
+    // exercised only the signature helper in isolation. They would have
+    // passed even if the install path stopped calling the helper.
+    // envlite_phase5_apply_extract is now the small testable seam —
+    // confirm the guard fires when the initial signature doesn't match
+    // the current path identity.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_tmpdir('phase5-apply-mismatch');
+    $pluginsParent = "$dir/src/wp-content/plugins";
+    mkdir($pluginsParent, 0755, true);
+    $pluginPath = "$pluginsParent/sqlite-database-integration";
+
+    $zipPath = envlite_test_tmpdir('phase5-apply-mismatch-zip') . '/payload.zip';
+    envlite_test_phase5_build_minimal_plugin_zip($zipPath);
+    $zip = new \ZipArchive();
+    envlite_assert($zip->open($zipPath) === true);
+
+    try {
+        $initialSignature = envlite_phase5_path_signature($pluginPath); // null
+        // Simulate concurrent interference: a user creates a directory
+        // at the plugin path during the fetch window.
+        mkdir($pluginPath);
+        file_put_contents("$pluginPath/user-file", 'must-survive');
+
+        $thrown = null;
+        try {
+            envlite_phase5_apply_extract($dir, $pluginPath, $initialSignature, $zip);
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        }
+        envlite_assert($thrown !== null,
+            'apply_extract must throw when the plugin path identity changes');
+        envlite_assert(strpos($thrown->getMessage(), 'changed identity') !== false,
+            'error must name the identity-change failure; got: ' . $thrown->getMessage());
+
+        // The user's directory and inner file must survive — the guard
+        // fired BEFORE the clear pass, so no clobbering.
+        envlite_assert(is_dir($pluginPath),
+            'guard must abort before clearing — directory must survive');
+        envlite_assert_eq('must-survive', file_get_contents("$pluginPath/user-file"),
+            'user file must survive the guard-throw path');
+    } finally {
+        $zip->close();
+    }
+}
+
+function test_phase5_apply_extract_succeeds_when_signature_matches() {
+    // Positive case: signature unchanged from initial scan to apply
+    // time. Helper clears the (empty) plugin path and extracts the zip
+    // into the parent. End state: a fresh tree from the zip.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_tmpdir('phase5-apply-ok');
+    $pluginsParent = "$dir/src/wp-content/plugins";
+    mkdir($pluginsParent, 0755, true);
+    $pluginPath = "$pluginsParent/sqlite-database-integration";
+
+    $zipPath = envlite_test_tmpdir('phase5-apply-ok-zip') . '/payload.zip';
+    envlite_test_phase5_build_minimal_plugin_zip($zipPath);
+    $zip = new \ZipArchive();
+    envlite_assert($zip->open($zipPath) === true);
+
+    try {
+        $initialSignature = envlite_phase5_path_signature($pluginPath); // null
+        envlite_phase5_apply_extract($dir, $pluginPath, $initialSignature, $zip);
+        envlite_assert(is_dir($pluginPath),
+            'extract must materialize the plugin directory');
+        envlite_assert(is_file("$pluginPath/db.copy"),
+            'extract must produce db.copy from the zip');
+    } finally {
+        $zip->close();
+    }
+}
+
 function test_phase5_drop_recorded_pin_removes_pin_from_state() {
     // Set up a state file with the pin and an unrelated key; verify the
     // helper removes only the pin and leaves the rest intact. This is the
