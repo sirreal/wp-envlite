@@ -1265,6 +1265,21 @@ pre-existing user file or symlink at the temp path collide with
 envlite's write — `wb` would have truncated it (or followed the
 symlink to truncate its target) before ownership could be evaluated.
 
+**Manifest-first ordering.** Callers writing a managed file MUST
+update and `envlite_manifest_save` the manifest *before* invoking
+`envlite_atomic_write` for the content. The hash is computed up
+front from the in-memory bytes so the manifest already has the
+correct SHA at save time. The failure mode under crash-or-interrupt
+between the two steps is then "manifest claims envlite owns X but X
+is missing on disk", which `envlite_ownership` classifies as
+`owned_clean` — the next `up` recreates the file silently. Reversed
+ordering (atomic_write first, manifest_save second) leaves the
+inverse failure: file on disk with no manifest record. `clean` then
+orphans the file, and the next `up` treats it as user-authored and
+prompts before overwriting — both contrary to the spec's
+ownership/atomic-write contract. All Phase 5/6/7 callers and the
+internal Phase 1 port-cache writer use the manifest-first order.
+
 Before the `rename()`, atomic_write clears a non-regular destination
 (symlinks via `unlink`, directories via the symlink-aware `rrmdir`).
 POSIX `rename()` can replace a regular file or a missing path

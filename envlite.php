@@ -842,17 +842,20 @@ function envlite_phase1_discover_port(string $repoRoot, ?int $explicitPort): int
 
 function envlite_phase1_write_cache(string $repoRoot, int $port): void {
     $cachePath = rtrim(envlite_path_to_posix($repoRoot), '/') . '/.cache/envlite/port';
-    // Load the manifest BEFORE writing the port cache. envlite_manifest_load
-    // throws when the manifest exists but is unreadable or non-regular
-    // (rounds 13/14); doing the load after the atomic_write would leave a
-    // newly-written `.cache/envlite/port` file unrecorded in the manifest
-    // — exactly the "phase 1 mutated state without recording it" failure
-    // the spec's bind-failure contract is trying to prevent. Failing here
-    // surfaces the manifest issue before any state mutation occurs.
+    // Save manifest BEFORE the atomic_write (manifest-first ordering;
+    // see envlite_phase5_install for the failure-mode rationale). If
+    // anything goes wrong between manifest_save and atomic_write, the
+    // manifest claims envlite owns the port file but the file is
+    // missing on disk — envlite_ownership classifies that as
+    // 'owned_clean' so the next `up` recreates it without prompting.
+    // The inverse ordering (write first) would leave the port file on
+    // disk unrecorded; the next `clean` would orphan it and the next
+    // `up` would prompt as if it were user-authored.
     $manifest = envlite_manifest_load($repoRoot);
-    $hash = envlite_atomic_write($cachePath, "$port\n");
-    $manifest['.cache/envlite/port'] = $hash;
+    $bytes = "$port\n";
+    $manifest['.cache/envlite/port'] = hash('sha256', $bytes);
     envlite_manifest_save($repoRoot, $manifest);
+    envlite_atomic_write($cachePath, $bytes);
 }
 
 function envlite_phase2_input_hash(string $repoRoot): ?string {
@@ -1612,9 +1615,18 @@ function envlite_phase5_install(
     } elseif ($ownership === 'unowned') {
         envlite_prompt_or_abort($force, 'up', 'overwrite unowned file', $dbPhpRel, null, null);
     }
-    $hash = envlite_atomic_write($dbPhpAbs, $dbBytes);
+    // Order: record ownership FIRST, then write the file. If a crash
+    // interrupts between these two writes, the failure mode is "manifest
+    // claims envlite owns X, X is missing on disk" — envlite_ownership
+    // returns 'owned_clean' for that combination, so the next `up` safely
+    // recreates the file without prompting. Reversing the order (write
+    // first, then record) leaves the inverse failure mode where the file
+    // exists but the manifest has no entry, and the next `clean` orphans
+    // it while the next `up` treats it as user-owned and prompts.
+    $hash = hash('sha256', $dbBytes);
     $manifest[$dbPhpRel] = $hash;
     envlite_manifest_save($repoRoot, $manifest);
+    envlite_atomic_write($dbPhpAbs, $dbBytes);
 
     // Step 6: tripwire.
     envlite_phase5_assert_placeholder($dbCopy);
@@ -1695,9 +1707,11 @@ function envlite_phase6_install(string $repoRoot, bool $force): void {
     } elseif ($ownership === 'unowned') {
         envlite_prompt_or_abort($force, 'up', 'overwrite unowned file', $outRel, null, null);
     }
-    $hash = envlite_atomic_write($outAbs, $rendered);
+    // Save manifest first; see envlite_phase5_install for the rationale.
+    $hash = hash('sha256', $rendered);
     $manifest[$outRel] = $hash;
     envlite_manifest_save($repoRoot, $manifest);
+    envlite_atomic_write($outAbs, $rendered);
 }
 
 const ENVLITE_SALT_URL = 'https://api.wordpress.org/secret-key/1.1/salt/';
@@ -1808,9 +1822,11 @@ function envlite_phase7_install(string $repoRoot, int $port, bool $force): void 
     } elseif ($ownership === 'unowned') {
         envlite_prompt_or_abort($force, 'up', 'overwrite unowned file', $outRel, null, null);
     }
-    $hash = envlite_atomic_write($outAbs, $rendered);
+    // Save manifest first; see envlite_phase5_install for the rationale.
+    $hash = hash('sha256', $rendered);
     $manifest[$outRel] = $hash;
     envlite_manifest_save($repoRoot, $manifest);
+    envlite_atomic_write($outAbs, $rendered);
 }
 
 /**
