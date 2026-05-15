@@ -252,11 +252,17 @@ function test_clean_walks_manifest_when_state_dir_is_symlink_to_directory() {
     envlite_assert(is_dir("$repo/.cache/envlite"),
         'symlink-to-dir must satisfy is_dir');
 
-    // Seed manifest at the symlink target so the walk finds the
-    // envlite-managed outputs via the symlinked state dir.
+    // Seed a state-dir entry — Phase 1 always records `.cache/envlite/port`
+    // in the manifest, and its resolved path goes THROUGH the state-dir
+    // symlink to outside the checkout. Round-24's containment check would
+    // mark it as escaping and the whole clean would fail; the
+    // state-dir-exception fix lets it through. Without this entry in the
+    // fixture, the test passes against a broken containment check.
+    file_put_contents("$repo/.cache/envlite/port", "8421\n");
     $manifest = [
-        'src/wp-config.php' => hash('sha256', 'envlite-owned'),
-        'wp-tests-config.php' => hash('sha256', 'envlite-owned'),
+        'src/wp-config.php'      => hash('sha256', 'envlite-owned'),
+        'wp-tests-config.php'    => hash('sha256', 'envlite-owned'),
+        '.cache/envlite/port'    => hash('sha256', "8421\n"),
     ];
     envlite_manifest_save($repo, $manifest);
     envlite_assert(file_exists("$stateTarget/manifest"),

@@ -1274,19 +1274,34 @@ to edit the manifest, that order is well-defined.
 
 **Containment check.** Before each delete, `clean` resolves the
 manifest entry's absolute path with `realpath()` and verifies the
-resolved path stays under the canonical repo root. The top-level
-symlink guard in `rrmdir` only protects the leaf component of a
-single manifest entry; an **ancestor** symlink (e.g. the user
-replaced `src/wp-content/plugins` with a symlink to
-`/tmp/shared-plugins`) is followed by `is_dir()`/`scandir()` on the
-deeper manifest entry path, and `rrmdir` would recursively delete
-the symlink target without realizing the path escapes the checkout.
-Entries whose resolved path escapes are marked as failed; the
-manifest and state are preserved so the user can inspect and resolve
-the situation manually. Broken symlinks (which have no `realpath`
-resolution) skip the containment check — the leaf is the symlink
-itself, an `@unlink` of which is by definition a single-inode
-operation that cannot escape.
+resolved path stays under the canonical repo root **or** under the
+canonical state directory. The top-level symlink guard in `rrmdir`
+only protects the leaf component of a single manifest entry; an
+**ancestor** symlink (e.g. the user replaced `src/wp-content/plugins`
+with a symlink to `/tmp/shared-plugins`) is followed by
+`is_dir()`/`scandir()` on the deeper manifest entry path, and
+`rrmdir` would recursively delete the symlink target without
+realizing the path escapes the checkout. Entries whose resolved path
+escapes are marked as failed; the manifest and state are preserved
+so the user can inspect and resolve the situation manually. Broken
+symlinks (which have no `realpath` resolution) skip the containment
+check — the leaf is the symlink itself, an `@unlink` of which is by
+definition a single-inode operation that cannot escape.
+
+The state-directory exception exists because a symlinked
+`.cache/envlite/` (a spec-supported user setup — see the
+state-directory section above) makes legitimate manifest entries
+like `.cache/envlite/port` and `.cache/envlite/manifest` resolve
+*outside* the canonical repo root via that symlink. Without the
+exception every such entry would be flagged as an escape and clean
+would fail on every checkout whose state has been redirected.
+
+Path comparison normalizes separators with
+`str_replace('\\', '/', ...)` on both sides before the prefix check:
+`realpath()` returns OS-native separators (`\` on Windows), and a
+prefix comparison against an unnormalized `\`-using path would
+spuriously flag every legitimate Windows manifest entry as
+escaping the checkout.
 
 The final `.cache/envlite/` removal is **recursive** (rrmdir, not a
 single `rmdir`). Atomic writes can leave temp siblings of
