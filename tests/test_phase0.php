@@ -13,6 +13,45 @@ function test_phase0_cwd_check_passes_for_real_repo() {
     envlite_assert(envlite_phase0_is_wordpress_develop($root), "expected $root to be a WP-develop checkout");
 }
 
+function test_phase0_cwd_check_rejects_directory_at_file_marker_path() {
+    // Round 14 regression: file_exists() alone matched a directory
+    // named `package.json` (or any other file marker), letting Phase 0
+    // approve a malformed tree. The fix uses is_file for file markers
+    // and is_dir for the `src/wp-includes` directory marker.
+    $root = envlite_test_tmpdir('phase0-dir-at-file-marker');
+    mkdir("$root/src/wp-includes", 0755, true);
+    mkdir("$root/tests/phpunit/includes", 0755, true);
+    file_put_contents("$root/tests/phpunit/includes/bootstrap.php", '<?php');
+    // package.json is a DIRECTORY, not a file — malformed.
+    mkdir("$root/package.json");
+    file_put_contents("$root/composer.json", '{}');
+    file_put_contents("$root/wp-config-sample.php", '<?php');
+    file_put_contents("$root/wp-tests-config-sample.php", '<?php');
+    envlite_assert(
+        !envlite_phase0_is_wordpress_develop($root),
+        'phase 0 must reject a directory at a file-marker path'
+    );
+}
+
+function test_phase0_cwd_check_rejects_file_at_dir_marker_path() {
+    // Inverse case: a regular file named `src/wp-includes` (instead of a
+    // directory) must also fail the marker check.
+    $root = envlite_test_tmpdir('phase0-file-at-dir-marker');
+    mkdir("$root/src", 0755, true);
+    mkdir("$root/tests/phpunit/includes", 0755, true);
+    file_put_contents("$root/tests/phpunit/includes/bootstrap.php", '<?php');
+    file_put_contents("$root/package.json", '{}');
+    file_put_contents("$root/composer.json", '{}');
+    file_put_contents("$root/wp-config-sample.php", '<?php');
+    file_put_contents("$root/wp-tests-config-sample.php", '<?php');
+    // src/wp-includes is a FILE, not a directory.
+    file_put_contents("$root/src/wp-includes", 'oops');
+    envlite_assert(
+        !envlite_phase0_is_wordpress_develop($root),
+        'phase 0 must reject a file at the src/wp-includes directory marker'
+    );
+}
+
 function test_phase0_cwd_check_fails_for_random_dir() {
     $dir = envlite_test_tmpdir('phase0-bogus');
     envlite_assert(!envlite_phase0_is_wordpress_develop($dir));

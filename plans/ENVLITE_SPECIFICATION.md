@@ -285,10 +285,20 @@ assumptions. Cheap to run and informative on failure.
 **Checks (all required):**
 
 1. CWD is the root of a wordpress-develop checkout. Detect by the
-   simultaneous presence of: `package.json`, `composer.json`,
-   `wp-config-sample.php`, `wp-tests-config-sample.php`,
-   `src/wp-includes/`, `tests/phpunit/includes/bootstrap.php`. If any are
-   missing, abort with exit code 3.
+   simultaneous presence of these markers, with the correct on-disk
+   shape:
+   - `package.json` (regular file)
+   - `composer.json` (regular file)
+   - `wp-config-sample.php` (regular file)
+   - `wp-tests-config-sample.php` (regular file)
+   - `src/wp-includes` (directory)
+   - `tests/phpunit/includes/bootstrap.php` (regular file)
+
+   Each file marker is checked with `is_file()` and the directory
+   marker with `is_dir()` — `file_exists()` alone would let a
+   malformed tree pass (a directory named `package.json`, or a regular
+   file at `src/wp-includes`). If any marker is missing OR present
+   with the wrong shape, abort with exit code 3.
 2. `PHP_VERSION` ≥ 7.4. envlite is run by PHP itself, so `PHP_VERSION_ID`
    is the authoritative check.
 3. The following PHP extensions are loaded

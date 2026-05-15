@@ -342,18 +342,26 @@ function envlite_prompt_or_abort(
     return true;
 }
 
+// Each marker is paired with its expected shape: 'file' or 'dir'.
+// file_exists() alone would let a malformed checkout pass preflight —
+// e.g. a regular file at `src/wp-includes`, or a directory called
+// `package.json`. Phase 0 would then approve a non-wordpress-develop
+// tree and the later phases would try to install dependencies and
+// write envlite outputs into it.
 const ENVLITE_REPO_MARKERS = [
-    'package.json',
-    'composer.json',
-    'wp-config-sample.php',
-    'wp-tests-config-sample.php',
-    'src/wp-includes',
-    'tests/phpunit/includes/bootstrap.php',
+    'package.json'                          => 'file',
+    'composer.json'                         => 'file',
+    'wp-config-sample.php'                  => 'file',
+    'wp-tests-config-sample.php'            => 'file',
+    'src/wp-includes'                       => 'dir',
+    'tests/phpunit/includes/bootstrap.php'  => 'file',
 ];
 
 function envlite_phase0_is_wordpress_develop(string $root): bool {
-    foreach (ENVLITE_REPO_MARKERS as $m) {
-        if (!file_exists($root . '/' . $m)) { return false; }
+    foreach (ENVLITE_REPO_MARKERS as $rel => $kind) {
+        $abs = $root . '/' . $rel;
+        if ($kind === 'file' && !is_file($abs)) { return false; }
+        if ($kind === 'dir' && !is_dir($abs)) { return false; }
     }
     return true;
 }
