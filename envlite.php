@@ -810,7 +810,13 @@ function envlite_phase1_discover_port(string $repoRoot, ?int $explicitPort): int
 
     if ($explicitPort !== null) {
         if (!envlite_phase1_port_is_free($explicitPort)) {
-            envlite_log('up', "phase 1: port $explicitPort is in use; try a different --port (e.g. lsof -nP -iTCP:$explicitPort -sTCP:LISTEN)");
+            // Spec contract: bind failure produces the single diagnostic
+            // line `envlite up: failed to bind 127.0.0.1:<port>`. Phase 1's
+            // explicit-port path is just that bind failure — don't prepend
+            // `phase 1:` (the documented bind-failure line has no phase
+            // label) or append remediation hints (the README's
+            // troubleshooting table covers them).
+            envlite_log('up', "failed to bind 127.0.0.1:$explicitPort");
             exit(1);
         }
         envlite_phase1_write_cache($repoRoot, $explicitPort);
