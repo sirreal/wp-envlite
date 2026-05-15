@@ -169,6 +169,41 @@ function test_up_with_bound_explicit_port_leaves_manifest_unmutated() {
     }
 }
 
+function test_phase1_does_not_write_port_cache_when_manifest_unreadable() {
+    // Round 15 regression: envlite_phase1_write_cache used to call
+    // envlite_atomic_write BEFORE envlite_manifest_load. A manifest
+    // that exists but is unreadable (rounds 13/14) throws from
+    // manifest_load — by that point the new `port` file had already
+    // been written, and the manifest never got the entry. State
+    // mutated without recording, violating the bind-failure-contract
+    // spirit (no manifest mutation on failure).
+    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) { return; }
+    $dir = envlite_test_tmpdir('phase1-manifest-unreadable');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    // Pre-create the manifest with content envlite would consider valid,
+    // then strip read perms so manifest_load throws.
+    file_put_contents("$dir/.cache/envlite/manifest", str_repeat('a', 64) . "  some/path\n");
+    chmod("$dir/.cache/envlite/manifest", 0000);
+
+    try {
+        $thrown = null;
+        try {
+            envlite_phase1_write_cache($dir, 8421);
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+        envlite_assert($thrown !== null,
+            'write_cache must propagate the manifest_load throw');
+        envlite_assert(strpos($thrown->getMessage(), 'cannot read manifest') !== false,
+            'error must surface the manifest read failure; got: ' . $thrown->getMessage());
+
+        envlite_assert(!file_exists("$dir/.cache/envlite/port"),
+            'port file must NOT exist after a failed manifest load — no state mutation allowed');
+    } finally {
+        chmod("$dir/.cache/envlite/manifest", 0644);
+    }
+}
+
 function test_phase1_ignores_cache_when_out_of_range() {
     $dir = envlite_test_tmpdir('phase1-bad-cache');
     mkdir($dir . '/.cache/envlite', 0755, true);

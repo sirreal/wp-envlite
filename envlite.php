@@ -804,8 +804,15 @@ function envlite_phase1_discover_port(string $repoRoot, ?int $explicitPort): int
 
 function envlite_phase1_write_cache(string $repoRoot, int $port): void {
     $cachePath = rtrim(envlite_path_to_posix($repoRoot), '/') . '/.cache/envlite/port';
-    $hash = envlite_atomic_write($cachePath, "$port\n");
+    // Load the manifest BEFORE writing the port cache. envlite_manifest_load
+    // throws when the manifest exists but is unreadable or non-regular
+    // (rounds 13/14); doing the load after the atomic_write would leave a
+    // newly-written `.cache/envlite/port` file unrecorded in the manifest
+    // — exactly the "phase 1 mutated state without recording it" failure
+    // the spec's bind-failure contract is trying to prevent. Failing here
+    // surfaces the manifest issue before any state mutation occurs.
     $manifest = envlite_manifest_load($repoRoot);
+    $hash = envlite_atomic_write($cachePath, "$port\n");
     $manifest['.cache/envlite/port'] = $hash;
     envlite_manifest_save($repoRoot, $manifest);
 }
