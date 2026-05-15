@@ -774,9 +774,15 @@ before being overwritten; `--force` answers yes to every such prompt.
    extraction succeeds — subsequent `up` runs compare against this
    to detect a code-level pin bump.
 
-   Immediately before invoking `ZipArchive::extractTo`, re-check the
-   identity of **both** the plugin path and its parent directory
-   (`src/wp-content/plugins/`). The ownership prompt fired against
+   Immediately before invoking `ZipArchive::extractTo`, verify the
+   resolved (canonical) plugin parent stays under the canonical repo
+   root, AND re-check the identity of **both** the plugin path and
+   its parent directory (`src/wp-content/plugins/`). The `realpath()`
+   containment check catches ANCESTOR symlinks (e.g.
+   `src/wp-content` itself swapped to a symlink to outside the
+   checkout); `is_link($parentDir)` is false in that case because
+   `parentDir` is a real directory at the symlink target, so the
+   identity check alone passes and extractTo would write outside. The ownership prompt fired against
    the *specific entries* present at the initial scan; the HTTP fetch
    + SHA verify + zip open window is several seconds wide and another
    process (or the user themselves) can create, remove, or **swap**

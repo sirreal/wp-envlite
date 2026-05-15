@@ -1446,6 +1446,29 @@ function envlite_phase5_apply_extract(
             "phase 5: plugin parent $parentDir is not a real directory; refusing to extract"
         );
     }
+    // Ancestor-symlink defense: is_link($parentDir) only protects the
+    // immediate parent. An ancestor higher up (e.g. `src/wp-content`
+    // swapped to a symlink to `/tmp/elsewhere`) leaves the parent
+    // itself as a real directory at the symlink target — is_link is
+    // false on it, the round-21 check passes, and extractTo writes
+    // the plugin tree to wherever the ancestor points. Resolve the
+    // parent through realpath and refuse if it escapes the canonical
+    // repo root. Same defense as envlite_clean_apply for manifest
+    // entries (round 24 P1), applied here to the extract destination.
+    $canonicalRoot = @realpath($repoRoot);
+    $canonicalParent = @realpath($parentDir);
+    if ($canonicalRoot === false || $canonicalParent === false) {
+        throw new \RuntimeException(
+            "phase 5: cannot resolve canonical path for $parentDir; refusing to extract"
+        );
+    }
+    $rootPrefix = rtrim(envlite_path_to_forward_slashes($canonicalRoot), '/') . '/';
+    $parentNorm = envlite_path_to_forward_slashes($canonicalParent);
+    if (strpos($parentNorm . '/', $rootPrefix) !== 0) {
+        throw new \RuntimeException(
+            "phase 5: resolved plugin parent $canonicalParent escapes the checkout; refusing to extract"
+        );
+    }
     // Strict pre-extract clear of any entry at the plugin path. The
     // helper re-stats after each removal to defend against silent
     // @unlink/rrmdir failure and TOCTOU.

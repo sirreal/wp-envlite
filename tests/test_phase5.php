@@ -220,6 +220,61 @@ function test_phase5_apply_extract_throws_when_parent_swapped_to_symlink() {
     }
 }
 
+function test_phase5_apply_extract_throws_when_ancestor_symlink_escapes_checkout() {
+    // Round 25 P2 regression: round-21's parent check used is_link on
+    // the IMMEDIATE parent (`src/wp-content/plugins`). If an ANCESTOR
+    // higher up (`src/wp-content` itself) is a symlink to outside the
+    // checkout, the immediate parent at the symlink target is a real
+    // directory: is_link false → round-21 passes → extractTo writes
+    // outside. The fix realpath()s the parent and verifies it stays
+    // under canonical repo root.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $repo = envlite_test_tmpdir('phase5-apply-ancestor-escape');
+    // Set up an external directory the ancestor symlink will point at.
+    $external = envlite_test_tmpdir('phase5-apply-ancestor-escape-target');
+    mkdir("$external/plugins", 0755, true);
+    file_put_contents("$external/precious", 'MUST_SURVIVE');
+
+    // Inside the checkout, `src/wp-content` is a symlink to $external.
+    // The immediate plugin parent `src/wp-content/plugins` is then a
+    // real directory at the symlink target — is_link is false on it.
+    mkdir("$repo/src", 0755, true);
+    symlink($external, "$repo/src/wp-content");
+    $pluginsParent = "$repo/src/wp-content/plugins"; // real dir via symlink
+    $pluginPath = "$pluginsParent/sqlite-database-integration";
+
+    $zipPath = envlite_test_tmpdir('phase5-apply-ancestor-escape-zip') . '/payload.zip';
+    envlite_test_phase5_build_minimal_plugin_zip($zipPath);
+    $zip = new \ZipArchive();
+    envlite_assert($zip->open($zipPath) === true);
+
+    try {
+        $initialSignature = envlite_phase5_path_signature($pluginPath); // null
+        $initialParentSignature = envlite_phase5_path_signature($pluginsParent);
+        // Both signatures stay stable across the call — the ancestor
+        // symlink is already in place. The realpath containment check
+        // is what catches the escape.
+
+        $thrown = null;
+        try {
+            envlite_phase5_apply_extract($repo, $pluginPath, $initialSignature, $initialParentSignature, $zip);
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        }
+        envlite_assert($thrown !== null,
+            'apply_extract must throw when the resolved parent escapes the checkout');
+        envlite_assert(strpos($thrown->getMessage(), 'escapes the checkout') !== false,
+            'error must name the escape; got: ' . $thrown->getMessage());
+
+        // The external target must remain byte-identical.
+        envlite_assert(!is_file("$external/plugins/sqlite-database-integration/db.copy"),
+            'extractTo must NOT have written into the symlink target');
+        envlite_assert_eq('MUST_SURVIVE', file_get_contents("$external/precious"));
+    } finally {
+        $zip->close();
+    }
+}
+
 function test_phase5_apply_extract_succeeds_when_signature_matches() {
     // Positive case: signature unchanged from initial scan to apply
     // time. Helper clears the (empty) plugin path and extracts the zip
