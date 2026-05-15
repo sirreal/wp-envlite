@@ -727,14 +727,25 @@ before being overwritten; `--force` answers yes to every such prompt.
    This produces `src/wp-content/plugins/sqlite-database-integration/`.
    Delete the temp zip.
 
-   If the destination directory exists and is **not** in the manifest
-   (a user-installed plugin), prompt before overwriting. `--force`
-   bypasses the prompt and the extract proceeds, overlaying envlite's
-   pinned tree on top of whatever was there. Record the directory in
-   the manifest as a `dir` entry once extraction succeeds. Record
-   the current pin literal to `phase5.recorded_pin_sha` in
-   `.cache/envlite/state` once extraction succeeds — subsequent `up` runs
-   compare against this to detect a code-level pin bump.
+   If anything other than envlite's own owned real directory tree sits
+   at the plugin path — an unowned real directory (user-installed
+   plugin), a symlink (always external), or a non-directory entry —
+   prompt before overwriting. `--force` bypasses the prompt and the
+   extract proceeds. The overwrite is a **total replacement**: the
+   pre-existing entry is cleared (see the "clear the plugin path
+   entirely" paragraph below for the rationale and the failure
+   semantics) and `ZipArchive::extractTo` then materializes a fresh
+   directory whose contents come entirely from the verified zip. An
+   earlier draft described this as "overlaying envlite's pinned tree
+   on top of whatever was there"; that wording is preserved here only
+   to flag that overlay is **wrong** — it lets `extractTo` follow
+   user-introduced symlinks inside the existing tree and write to
+   their targets (potentially outside the checkout). Record the
+   directory in the manifest as a `dir` entry once extraction
+   succeeds. Record the current pin literal to
+   `phase5.recorded_pin_sha` in `.cache/envlite/state` once
+   extraction succeeds — subsequent `up` runs compare against this
+   to detect a code-level pin bump.
 
    Immediately before invoking `ZipArchive::extractTo`, **clear the
    plugin path entirely** (the ownership prompt above has authorized
