@@ -49,6 +49,6 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
-          name: envlite-phar
           path: envlite.phar
+          archive: false
           if-no-files-found: error
