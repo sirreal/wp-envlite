@@ -587,15 +587,28 @@ fails to bootstrap WordPress.
    current `package-lock.json` hash, AND `phase3.recorded_composer_hash`
    matching the current `composer.json` hash.
 5. `.cache/envlite/state` records `phase3.recorded_head_sha` matching
-   the current `.git/HEAD` resolution. The HEAD SHA detects branch
+   the current resolved-HEAD SHA. The HEAD SHA detects branch
    switches, `git pull`s, and rebases that change build inputs under
    `src/` without changing the lockfiles — without this component
    Phase 3 would skip after such operations and leave stale generated
-   assets from the previous source tree. Resolution reads `.git/HEAD`
-   directly (no shell-out to git): a literal 40-hex SHA is returned
-   as-is (detached HEAD); a `ref: refs/...` is followed to either the
-   loose ref file or, falling back, the `.git/packed-refs` index. A
-   checkout outside any git repo (or with an unresolvable HEAD)
+   assets from the previous source tree.
+
+   Resolution reads git plumbing files directly (no shell-out to git):
+   - `$repoRoot/.git` may be a directory (plain checkout) or a file
+     containing `gitdir: <path>` (linked worktree from `git worktree
+     add`). Resolve to the per-worktree git dir accordingly; a
+     relative `gitdir:` target is rooted at the worktree directory.
+   - Inside the per-worktree dir, `HEAD` is either a literal 40-hex
+     SHA (detached HEAD, returned as-is) or `ref: refs/...`.
+   - For the ref form, look up the ref in:
+     1. The per-worktree git dir (per-tree refs/heads live there in
+        a linked worktree).
+     2. The *common* git dir, found via the `commondir` file inside
+        the per-worktree git dir (or the same dir for a plain
+        checkout). Other refs and `packed-refs` live in the common
+        dir.
+
+   A checkout outside any git repo, or one with an unresolvable HEAD,
    returns null; the comparison `null === null` still allows skip so
    non-git trees keep the cached build. Uncommitted edits in `src/`
    that don't move HEAD remain the user's responsibility — `--rebuild`
