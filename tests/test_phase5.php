@@ -163,16 +163,42 @@ function test_phase5_does_not_skip_when_plugin_path_is_symlink() {
         'symlink target must not be deleted by phase 5 on pre-extract failure');
 }
 
-function test_phase5_clear_plugin_blocker_no_op_on_real_directory() {
-    // A real directory stays — extractTo overlays into it.
+function test_phase5_clear_plugin_blocker_recursively_removes_real_directory() {
+    // Round 15 update: a real directory at the plugin path used to
+    // survive (overlay extract). That left extractTo exposed to
+    // pre-existing symlinks inside the tree — extractTo could follow
+    // them and write outside the checkout. The helper now clears
+    // real directories too so extractTo materializes a fresh tree.
     $dir = envlite_test_tmpdir('phase5-blocker-realdir');
     $plugin = "$dir/sqlite-database-integration";
     mkdir($plugin);
-    file_put_contents("$plugin/inner", 'survives');
+    file_put_contents("$plugin/inner", 'must-be-cleared');
     envlite_phase5_clear_plugin_blocker($plugin);
-    envlite_assert(is_dir($plugin) && !is_link($plugin),
-        'real directory must survive the clear pass');
-    envlite_assert_eq('survives', file_get_contents("$plugin/inner"));
+    envlite_assert(!file_exists($plugin),
+        'real directory must be cleared so extractTo creates a fresh tree');
+}
+
+function test_phase5_clear_plugin_blocker_unlinks_symlinks_inside_existing_tree() {
+    // Round 15 P2 regression: a pre-existing symlink inside the plugin
+    // tree would be followed by extractTo's overlay-write. The clear
+    // step now rrmdir's the tree (rrmdir is symlink-aware: it unlinks
+    // symlinks rather than following them), so the symlink is gone
+    // before extractTo runs and its target is untouched.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_tmpdir('phase5-blocker-inner-symlink');
+    $plugin = "$dir/sqlite-database-integration";
+    mkdir($plugin);
+    $external = envlite_test_tmpdir('phase5-blocker-inner-symlink-target');
+    file_put_contents("$external/external-file", 'EXTERNAL_DATA');
+    symlink("$external/external-file", "$plugin/db.copy");
+    envlite_assert(is_link("$plugin/db.copy"));
+
+    envlite_phase5_clear_plugin_blocker($plugin);
+
+    envlite_assert(!file_exists($plugin),
+        'plugin tree (containing the symlink) must be cleared');
+    envlite_assert_eq('EXTERNAL_DATA', file_get_contents("$external/external-file"),
+        'symlink target must not be touched by the clear pass');
 }
 
 function test_phase5_clear_plugin_blocker_unlinks_symlink() {
@@ -222,8 +248,8 @@ function test_phase5_clear_plugin_blocker_throws_when_symlink_cannot_be_removed(
             'must throw when the surviving symlink cannot be cleared');
         envlite_assert(strpos($thrown->getMessage(), 'phase 5') !== false,
             'error must carry the phase 5 prefix; got: ' . $thrown->getMessage());
-        envlite_assert(strpos($thrown->getMessage(), 'symlink') !== false,
-            'error must name the symlink; got: ' . $thrown->getMessage());
+        envlite_assert(strpos($thrown->getMessage(), 'could not clear') !== false,
+            'error must name the clear failure; got: ' . $thrown->getMessage());
         envlite_assert(strpos($thrown->getMessage(), 'refusing to extract') !== false,
             'error must spell out the refusal so the rationale is in the user log');
     } finally {

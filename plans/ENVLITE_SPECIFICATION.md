@@ -736,17 +736,23 @@ before being overwritten; `--force` answers yes to every such prompt.
    `.cache/envlite/state` once extraction succeeds — subsequent `up` runs
    compare against this to detect a code-level pin bump.
 
-   Immediately before invoking `ZipArchive::extractTo`, **clear any
-   non-real-directory entry at the plugin path** (the ownership prompt
-   above has authorized this when needed). Symlinks (any flavor) and
-   non-directory entries (regular file, FIFO, socket) are unlinked.
-   A real directory is left in place so `ZipArchive::extractTo`
-   overlays into it. The clear re-stats the path after each unlink
-   attempt: if a symlink (or any other non-directory) still remains —
-   the `@unlink` failed silently on permissions/RO mounts, or a TOCTOU
-   race between the initial scan and the extract commit point swapped
-   the entry — abort with a phase 5 diagnostic rather than letting
-   `extractTo` follow the link to outside the checkout.
+   Immediately before invoking `ZipArchive::extractTo`, **clear the
+   plugin path entirely** (the ownership prompt above has authorized
+   this when needed). Symlinks (any flavor) and non-directory entries
+   (regular file, FIFO, socket) are unlinked; a real directory is
+   recursively removed via the symlink-aware `rrmdir` helper. The
+   re-extract therefore always materializes a fresh directory whose
+   contents come entirely from the verified zip. Leaving an existing
+   real-directory tree in place and letting `extractTo` overlay would
+   expose another write-through-symlink path: a pre-existing symlink
+   inside the tree (e.g. the user's own
+   `sqlite-database-integration/db.copy` → `/etc/passwd`) would be
+   followed when `extractTo` writes the same path. The clear pass
+   re-stats afterwards: if anything still sits at the plugin path —
+   permission denied, an `@unlink`/rrmdir failed silently, or a TOCTOU
+   race recreated the entry — abort with a phase 5 diagnostic
+   ("could not clear … before extract; refusing to extract") rather
+   than letting `extractTo` proceed unsafely.
 
    Also immediately before `ZipArchive::extractTo`, drop any
    pre-existing `phase5.recorded_pin_sha` entry from state.

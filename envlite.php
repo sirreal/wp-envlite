@@ -1152,33 +1152,45 @@ function envlite_phase5_stage_temp_zip(string $tmpDir, string $bytes): string {
 /**
  * Strict pre-extract cleanup for the Phase 5 plugin path. The caller
  * holds the user's consent (prompt approved or --force); this function
- * makes sure the actual state on disk matches what extractTo needs:
- * a real directory or nothing. Anything else (symlink any flavor,
- * regular file, FIFO, socket) is unlinked.
+ * makes sure the path is **empty** before extractTo runs:
  *
- * Re-stats AFTER the unlink attempt: a `@unlink` can fail silently on
- * permissions/RO mounts, and a TOCTOU race could swap a real entry for
- * a symlink between the caller's initial scan and now. If a symlink
- * (or other non-directory) remains, throw with the `phase 5:` prefix
- * — extractTo would otherwise follow it and write outside the checkout.
- * A real directory at the path is left in place; ZipArchive::extractTo
- * overlays into existing directories, matching the unowned-but-prompted
- * "user-installed plugin" case.
+ *   - Symlinks (any flavor) are unlinked. envlite never writes a symlink
+ *     here; following one with extractTo could write the plugin tree
+ *     anywhere on disk reachable via the link.
+ *   - Non-directory entries (regular file, FIFO, socket) are unlinked
+ *     so extractTo can create the directory at the path.
+ *   - A real directory at the path is recursively removed via the
+ *     symlink-aware envlite_rrmdir helper. Overlay-extract into an
+ *     existing tree would let extractTo follow a pre-existing symlink
+ *     inside the tree (e.g. `sqlite-database-integration/db.copy` →
+ *     somewhere outside the checkout) and write through it. Clearing
+ *     the tree first means extractTo always materializes a fresh
+ *     directory whose contents come entirely from the verified zip.
+ *     The user's consent (prompt or --force) applies to the whole
+ *     tree replacement, which matches the "overwrite plugin tree"
+ *     prompt wording.
+ *
+ * Re-stats AFTER each clearing attempt: a `@unlink` or rrmdir can fail
+ * silently on permissions/RO mounts, and a TOCTOU race could swap an
+ * entry between the caller's initial scan and now. If anything still
+ * sits at the path, throw with the `phase 5:` prefix — extractTo
+ * cannot proceed safely.
  */
 function envlite_phase5_clear_plugin_blocker(string $pluginDir): void {
     if (is_link($pluginDir)) {
         @unlink($pluginDir);
-    } elseif (file_exists($pluginDir) && !is_dir($pluginDir)) {
+    } elseif (is_dir($pluginDir)) {
+        // rrmdir is symlink-aware: refuses to recurse through symlinks
+        // at the top level (round 8) AND unlinks symlinks inside
+        // rather than following them (existing behavior in
+        // envlite_rrmdir's foreach).
+        envlite_rrmdir($pluginDir);
+    } elseif (file_exists($pluginDir)) {
         @unlink($pluginDir);
     }
-    if (is_link($pluginDir)) {
+    if (file_exists($pluginDir) || is_link($pluginDir)) {
         throw new \RuntimeException(
-            "phase 5: symlink at $pluginDir could not be removed; refusing to extract"
-        );
-    }
-    if (file_exists($pluginDir) && !is_dir($pluginDir)) {
-        throw new \RuntimeException(
-            "phase 5: non-directory entry at $pluginDir could not be removed; refusing to extract"
+            "phase 5: could not clear $pluginDir before extract; refusing to extract"
         );
     }
 }
