@@ -1,6 +1,13 @@
 #!/usr/bin/env php
 <?php
 const ENVLITE_VERSION = '0.1.0';
+const ENVLITE_BUILD   = '';
+
+function envlite_version_string(): string {
+	$version = ENVLITE_VERSION;
+	$build   = ENVLITE_BUILD;
+	return $version . ($build !== '' ? " ($build)" : '');
+}
 
 function envlite_help_text(): string {
 	return
@@ -25,6 +32,9 @@ function envlite_help_text(): string {
 
 		  help, --help, -h
 		      Print this help.
+
+		  --version, -V
+		      Print the version and exit.
 
 		Flags:
 		  --port=N      Port for the dev server. Default: derived from the
@@ -1713,6 +1723,10 @@ function envlite_main(array $argv): int {
 
     if ($sub === 'help' || $sub === '--help' || $sub === '-h') {
         fwrite(STDERR, envlite_help_text());
+        return 0;
+    }
+    if ($sub === '--version' || $sub === '-V') {
+        echo envlite_version_string() . "\n";
         return 0;
     }
     if ($sub === 'up')    { return envlite_cmd_up($args, $force); }

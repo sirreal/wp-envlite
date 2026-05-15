@@ -37,6 +37,25 @@ if (strncmp($sourceCode, '#!', 2) === 0) {
     $sourceCode = $newline === false ? '' : substr($sourceCode, $newline + 1);
 }
 
+// Inject git commit information into ENVLITE_BUILD so `--version` reports
+// the exact commit the phar was built from.
+$build = '';
+$gitHash = trim((string) shell_exec('git -C ' . escapeshellarg($repoRoot) . ' rev-parse --short HEAD 2>/dev/null'));
+if ($gitHash !== '') {
+    $build = $gitHash;
+    $dirty = trim((string) shell_exec('git -C ' . escapeshellarg($repoRoot) . ' status --porcelain 2>/dev/null'));
+    if ($dirty !== '') {
+        $build .= '-dirty';
+    }
+}
+if ($build !== '') {
+    $sourceCode = preg_replace(
+        "/^const ENVLITE_BUILD\s*=\s*'';/m",
+        "const ENVLITE_BUILD   = '$build';",
+        $sourceCode
+    );
+}
+
 // Context-aware stub. Invoked as the CLI tool it runs envlite_main(); invoked
 // by `php -S` as the router (cli-server SAPI) it dispatches to router.php.
 // Phar::mapPhar registers the `envlite.phar` alias so the archive resolves its
