@@ -100,15 +100,17 @@ function test_write_managed_file_rolls_back_manifest_when_atomic_write_fails() {
     // would delete the user's file. The helper now reverts the manifest
     // entry on atomic_write failure.
     //
-    // Force the failure by writing to a read-only parent directory:
-    // atomic_write's temp-file fopen fails with permission denied,
-    // throws, and the helper must revert the manifest to its prior
-    // state.
-    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) { return; }
+    // Force the failure by making the "parent" directory a REGULAR FILE
+    // — then atomic_write's mkdir on that path can't create a directory
+    // (a file already exists there) AND fopen of the temp child fails
+    // because the parent isn't a directory. This works regardless of
+    // process EUID, so root CI containers exercise the rollback too
+    // (the earlier chmod 0555 approach silently skipped under root).
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
     $dir = envlite_test_tmpdir('write-managed-rollback');
     mkdir("$dir/.cache/envlite", 0755, true);
-    // The would-be target is in a read-only directory.
-    mkdir("$dir/locked", 0555);
+    // A regular file where a directory would need to be.
+    file_put_contents("$dir/blocker", 'not-a-directory');
 
     // Pre-existing manifest with an unrelated entry — must survive.
     $manifest = ['unrelated.txt' => str_repeat('a', 64)];
@@ -117,8 +119,8 @@ function test_write_managed_file_rolls_back_manifest_when_atomic_write_fails() {
     $thrown = null;
     try {
         envlite_write_managed_file(
-            $dir, $manifest, 'locked/output.txt', "envlite-content\n",
-            "$dir/locked/output.txt"
+            $dir, $manifest, 'blocker/output.txt', "envlite-content\n",
+            "$dir/blocker/output.txt"
         );
     } catch (\RuntimeException $e) {
         $thrown = $e;
@@ -128,7 +130,7 @@ function test_write_managed_file_rolls_back_manifest_when_atomic_write_fails() {
 
     // Manifest must be byte-identical to what it was BEFORE the call.
     // The in-memory $manifest var was reverted by the helper too.
-    envlite_assert(!isset($manifest['locked/output.txt']),
+    envlite_assert(!isset($manifest['blocker/output.txt']),
         'in-memory manifest entry must be reverted on failure');
     envlite_assert_eq(
         $manifest,
@@ -137,38 +139,35 @@ function test_write_managed_file_rolls_back_manifest_when_atomic_write_fails() {
     );
     envlite_assert(isset($manifest['unrelated.txt']),
         'unrelated manifest entries must survive the rollback');
-
-    chmod("$dir/locked", 0755);
 }
 
 function test_write_managed_file_reverts_to_prior_hash_when_overwriting_fails() {
     // Variant: there WAS a prior manifest entry for this path. After
     // atomic_write failure the in-memory and on-disk manifest must
     // both restore the prior hash (not just unset the key).
-    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) { return; }
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
     $dir = envlite_test_tmpdir('write-managed-rollback-overwrite');
     mkdir("$dir/.cache/envlite", 0755, true);
-    mkdir("$dir/locked", 0555);
+    // Regular-file blocker so the failure is root-independent.
+    file_put_contents("$dir/blocker", 'not-a-directory');
 
     $priorHash = hash('sha256', 'user-content');
-    $manifest = ['locked/output.txt' => $priorHash];
+    $manifest = ['blocker/output.txt' => $priorHash];
     envlite_manifest_save($dir, $manifest);
 
     try {
         envlite_write_managed_file(
-            $dir, $manifest, 'locked/output.txt', "envlite-content\n",
-            "$dir/locked/output.txt"
+            $dir, $manifest, 'blocker/output.txt', "envlite-content\n",
+            "$dir/blocker/output.txt"
         );
     } catch (\RuntimeException $e) {
         // expected
     }
 
-    envlite_assert_eq($priorHash, $manifest['locked/output.txt'],
+    envlite_assert_eq($priorHash, $manifest['blocker/output.txt'],
         'in-memory manifest must keep the prior hash on rollback');
     envlite_assert_eq($manifest, envlite_manifest_load($dir),
         'on-disk manifest must restore the prior hash');
-
-    chmod("$dir/locked", 0755);
 }
 
 function test_atomic_write_does_not_follow_symlink_at_legacy_tmp_name() {

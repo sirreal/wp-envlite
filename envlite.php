@@ -1460,16 +1460,21 @@ function envlite_phase5_path_signature(string $path): ?string {
  *   - resolved parent path escaping `realpath($repoRoot)`
  */
 function envlite_phase5_assert_parent_inside_repo(string $repoRoot, string $parentDir): void {
-    // Bust the stat AND realpath caches before resolving. realpath()'s
-    // cache is its own; clearstatcache(true, $path) invalidates both
-    // entries for the given path. The TOCTOU re-checks in
-    // envlite_phase5_apply_extract (and the pre-skip-predicate check
-    // in envlite_phase5_install) must compare current canonical paths,
-    // not whatever was cached from the initial scan — a race that
-    // swapped an ancestor symlink during the fetch window would
-    // otherwise be invisible.
-    clearstatcache(true, $repoRoot);
-    clearstatcache(true, $parentDir);
+    // Bust the stat AND realpath caches before resolving. The TOCTOU
+    // re-checks in envlite_phase5_apply_extract (and the pre-skip-
+    // predicate / pre-copy checks in envlite_phase5_install) must
+    // compare current canonical paths, not whatever was cached from
+    // the initial scan. clearstatcache(true, $path) only invalidates
+    // the cache entries for that specific path; PHP's realpath cache
+    // also stores entries for every INTERMEDIATE component visited
+    // during a prior `realpath` call (e.g. `src/wp-content` from a
+    // prior resolution of `src/wp-content/plugins`), and an ancestor
+    // swap leaves those intermediate entries stale. The simplest
+    // sound mitigation is to clear the entire realpath cache: pass
+    // no $filename to clearstatcache, which drops every entry. The
+    // performance cost is a few extra lstat() calls on Phase 5's
+    // tiny check sequence — acceptable for security-critical paths.
+    clearstatcache(true);
     $canonicalRoot = @realpath($repoRoot);
     $canonicalParent = @realpath($parentDir);
     if ($canonicalRoot === false || $canonicalParent === false) {
