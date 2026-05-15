@@ -748,18 +748,24 @@ before being overwritten; `--force` answers yes to every such prompt.
    to detect a code-level pin bump.
 
    Immediately before invoking `ZipArchive::extractTo`, re-check the
-   plugin path **identity** (not just shape). The ownership prompt
-   fired against the *specific entry* present at the initial scan;
-   the HTTP fetch + SHA verify + zip open window is several seconds
-   wide and another process (or the user themselves) can create,
-   remove, or **swap** the entry. The check uses an `lstat`-derived
-   `<ino>:<dev>` signature so a same-shape swap (a real directory
-   replaced by a different real directory; one symlink replaced by
-   another) is caught — boolean checks alone (`is_link`,
-   `is_dir`, `file_exists`) would miss the same-shape case. If the
-   signature has changed, abort with a phase 5 diagnostic. The
-   clear pass below would otherwise delete the new entry under
-   consent that was given for something else.
+   identity of **both** the plugin path and its parent directory
+   (`src/wp-content/plugins/`). The ownership prompt fired against
+   the *specific entries* present at the initial scan; the HTTP fetch
+   + SHA verify + zip open window is several seconds wide and another
+   process (or the user themselves) can create, remove, or **swap**
+   either position. Each check uses an `lstat`-derived `<ino>:<dev>`
+   signature so a same-shape swap (a real directory replaced by a
+   different real directory; one symlink replaced by another) is
+   caught — boolean checks alone (`is_link`, `is_dir`, `file_exists`)
+   would miss the same-shape case. The parent check additionally
+   asserts that the parent is a real directory at apply time; if a
+   symlink has been substituted there, `extractTo` would write the
+   plugin tree through the link to wherever it points, and the
+   plugin-path-only signature is null on both sides of the swap (the
+   plugin entry was absent then, and the parent's symlink-target may
+   still not contain it now), so without the parent check the round-18
+   guard misses this case. Any signature mismatch or parent-shape
+   anomaly aborts with a phase 5 diagnostic.
 
    Then **clear the plugin path entirely**. Symlinks (any flavor)
    and non-directory entries (regular file, FIFO, socket) are

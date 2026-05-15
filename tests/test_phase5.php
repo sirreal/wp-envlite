@@ -135,6 +135,7 @@ function test_phase5_apply_extract_throws_when_signature_mismatched() {
 
     try {
         $initialSignature = envlite_phase5_path_signature($pluginPath); // null
+        $initialParentSignature = envlite_phase5_path_signature($pluginsParent);
         // Simulate concurrent interference: a user creates a directory
         // at the plugin path during the fetch window.
         mkdir($pluginPath);
@@ -142,7 +143,7 @@ function test_phase5_apply_extract_throws_when_signature_mismatched() {
 
         $thrown = null;
         try {
-            envlite_phase5_apply_extract($dir, $pluginPath, $initialSignature, $zip);
+            envlite_phase5_apply_extract($dir, $pluginPath, $initialSignature, $initialParentSignature, $zip);
         } catch (\RuntimeException $e) {
             $thrown = $e;
         }
@@ -157,6 +158,63 @@ function test_phase5_apply_extract_throws_when_signature_mismatched() {
             'guard must abort before clearing — directory must survive');
         envlite_assert_eq('must-survive', file_get_contents("$pluginPath/user-file"),
             'user file must survive the guard-throw path');
+    } finally {
+        $zip->close();
+    }
+}
+
+function test_phase5_apply_extract_throws_when_parent_swapped_to_symlink() {
+    // Round 21 P2 regression: round-18's signature capture covered only
+    // the plugin path itself. extractTo writes into the PARENT (
+    // `src/wp-content/plugins/`). If the parent is swapped for a
+    // symlink during the fetch window, extractTo would write through
+    // it — and the plugin path's own signature would still be null
+    // both at scan time and at apply time (the absent-to-absent case),
+    // so the round-18 check passed. The fix captures parent identity
+    // too and refuses to extract through a parent symlink.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_tmpdir('phase5-apply-parent-symlink');
+    $pluginsParent = "$dir/src/wp-content/plugins";
+    mkdir($pluginsParent, 0755, true);
+    $pluginPath = "$pluginsParent/sqlite-database-integration";
+
+    $zipPath = envlite_test_tmpdir('phase5-apply-parent-symlink-zip') . '/payload.zip';
+    envlite_test_phase5_build_minimal_plugin_zip($zipPath);
+    $zip = new \ZipArchive();
+    envlite_assert($zip->open($zipPath) === true);
+
+    // Pick a SAFE target for the symlink: a real directory we control
+    // and can verify is untouched afterwards.
+    $external = envlite_test_tmpdir('phase5-apply-parent-symlink-target');
+    file_put_contents("$external/external-file", 'must-survive');
+
+    try {
+        $initialSignature = envlite_phase5_path_signature($pluginPath); // null
+        $initialParentSignature = envlite_phase5_path_signature($pluginsParent);
+
+        // Simulate the race: swap the parent directory for a symlink to
+        // the external target. The plugin path is still absent (null
+        // signature), so round-18's check would have passed. The new
+        // parent check is what catches this.
+        rmdir($pluginsParent);
+        symlink($external, $pluginsParent);
+
+        $thrown = null;
+        try {
+            envlite_phase5_apply_extract($dir, $pluginPath, $initialSignature, $initialParentSignature, $zip);
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        }
+        envlite_assert($thrown !== null,
+            'apply_extract must throw when the extraction parent is a symlink');
+        envlite_assert(strpos($thrown->getMessage(), 'parent') !== false,
+            'error must name the parent failure; got: ' . $thrown->getMessage());
+
+        // The symlink target must be untouched.
+        envlite_assert(!is_file("$external/sqlite-database-integration/db.copy"),
+            'extractTo must NOT have written into the symlink target');
+        envlite_assert_eq('must-survive', file_get_contents("$external/external-file"),
+            'pre-existing file at the symlink target must survive');
     } finally {
         $zip->close();
     }
@@ -179,7 +237,8 @@ function test_phase5_apply_extract_succeeds_when_signature_matches() {
 
     try {
         $initialSignature = envlite_phase5_path_signature($pluginPath); // null
-        envlite_phase5_apply_extract($dir, $pluginPath, $initialSignature, $zip);
+        $initialParentSignature = envlite_phase5_path_signature($pluginsParent);
+        envlite_phase5_apply_extract($dir, $pluginPath, $initialSignature, $initialParentSignature, $zip);
         envlite_assert(is_dir($pluginPath),
             'extract must materialize the plugin directory');
         envlite_assert(is_file("$pluginPath/db.copy"),

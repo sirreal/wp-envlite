@@ -1225,7 +1225,10 @@ function envlite_phase5_path_signature(string $path): ?string {
  * Contract:
  *   - The caller has already prompted (or honored --force), staged the
  *     verified zip, and opened the ZipArchive. $initialSignature is
- *     the path identity captured at scan time.
+ *     the plugin path identity captured at scan time;
+ *     $initialParentSignature is the same for the extraction parent
+ *     (`src/wp-content/plugins/`). Both are re-checked here to defend
+ *     against TOCTOU swaps in either position.
  *   - The caller holds the zip handle's lifetime; this function does
  *     NOT close it. (Closing belongs to the caller's `finally` so the
  *     archive is released before the temp zip is unlinked — important
@@ -1240,6 +1243,7 @@ function envlite_phase5_apply_extract(
     string $repoRoot,
     string $pluginDir,
     ?string $initialSignature,
+    ?string $initialParentSignature,
     \ZipArchive $zip
 ): void {
     // Re-check the plugin path identity. The ownership prompt fired
@@ -1252,6 +1256,28 @@ function envlite_phase5_apply_extract(
             "phase 5: plugin path $pluginDir changed identity during fetch; refusing to overwrite without re-prompt"
         );
     }
+    // Re-check the parent directory (`src/wp-content/plugins/`) identity
+    // and require it to be a real directory now. extractTo writes the
+    // plugin tree as a child of this parent; if the parent has been
+    // swapped to a symlink during the fetch window (or was always a
+    // symlink that the plugin-path check couldn't catch because the
+    // plugin path itself was absent), extractTo would write through it
+    // to wherever the link points. Capturing only the plugin path's
+    // identity, as in round 18, missed this — the plugin path's
+    // signature would still be null both at scan time and at apply
+    // time, so the check passed even with a fresh parent symlink.
+    $parentDir = dirname($pluginDir);
+    $currentParentSignature = envlite_phase5_path_signature($parentDir);
+    if ($currentParentSignature !== $initialParentSignature) {
+        throw new \RuntimeException(
+            "phase 5: plugin parent $parentDir changed identity during fetch; refusing to extract"
+        );
+    }
+    if (is_link($parentDir) || !is_dir($parentDir)) {
+        throw new \RuntimeException(
+            "phase 5: plugin parent $parentDir is not a real directory; refusing to extract"
+        );
+    }
     // Strict pre-extract clear of any entry at the plugin path. The
     // helper re-stats after each removal to defend against silent
     // @unlink/rrmdir failure and TOCTOU.
@@ -1259,7 +1285,7 @@ function envlite_phase5_apply_extract(
     // extractTo returns false on partial/failed extraction. Throwing
     // here means no subsequent state writes (manifest/state) record
     // the broken tree.
-    $extracted = $zip->extractTo("$repoRoot/src/wp-content/plugins/");
+    $extracted = $zip->extractTo("$parentDir/");
     if ($extracted !== true) {
         throw new \RuntimeException("phase 5: ZipArchive::extractTo failed for $pluginDir");
     }
@@ -1359,9 +1385,15 @@ function envlite_phase5_install(
     // external modification and must not satisfy the skip predicate.
     $pluginIsLink = is_link($pluginDir);
     $pluginIsRealDir = is_dir($pluginDir) && !$pluginIsLink;
-    // Capture a stable identity for the TOCTOU re-check before the
-    // clear pass (see comment around the re-stat assertion below).
+    // Capture stable identities for the TOCTOU re-check before the
+    // clear pass. Both the plugin path AND its parent need recording —
+    // extractTo writes into the parent, so a symlink-swap on the
+    // parent during the fetch window can let extractTo write outside
+    // the checkout even when the plugin path's own signature is
+    // unchanged (notably the absent → absent case, where the plugin
+    // path signature is null both times but the parent has flipped).
     $initialSignature = envlite_phase5_path_signature($pluginDir);
+    $initialParentSignature = envlite_phase5_path_signature(dirname($pluginDir));
     $pinMatches = ($state['phase5.recorded_pin_sha'] ?? null) === ENVLITE_SQLITE_PLUGIN_SHA256;
     $alreadyInstalled = !$rebuild
         && $pluginIsRealDir
@@ -1403,7 +1435,7 @@ function envlite_phase5_install(
                 // helper so the guard is unit-testable without going
                 // through the live wordpress.org fetch. See
                 // envlite_phase5_apply_extract() for the full contract.
-                envlite_phase5_apply_extract($repoRoot, $pluginDir, $initialSignature, $zip);
+                envlite_phase5_apply_extract($repoRoot, $pluginDir, $initialSignature, $initialParentSignature, $zip);
             } finally {
                 // Always close the archive before the outer finally
                 // unlinks the temp zip. On Windows an open archive locks
