@@ -2241,6 +2241,16 @@ function envlite_clean_collect(array $manifest): array {
  * @return string[] manifest-relative paths that remained after the attempt
  */
 function envlite_clean_apply(string $repoRoot, array $paths): array {
+    $canonicalRoot = @realpath($repoRoot);
+    if ($canonicalRoot === false) {
+        // Without a canonical root we can't enforce the containment
+        // check below. Fail every entry rather than risk recursing
+        // outside the checkout.
+        return $paths;
+    }
+    // Normalize trailing slash so the `starts-with $root . '/'`
+    // comparison below treats `/foo/barXXX` as outside `/foo/bar`.
+    $rootPrefix = rtrim($canonicalRoot, '/') . '/';
     $failed = [];
     foreach ($paths as $rel) {
         $abs = "$repoRoot/$rel";
@@ -2251,6 +2261,30 @@ function envlite_clean_apply(string $repoRoot, array $paths): array {
         // an orphan once the manifest itself is wiped by clean. is_link
         // catches that case.
         if (!file_exists($abs) && !is_dir($abs) && !is_link($abs)) { continue; }
+        // Ancestor-symlink defense: a manifest entry whose ancestor has
+        // been swapped for a symlink (e.g. `src/wp-content/plugins` →
+        // `/tmp/shared-plugins`) would let envlite_rrmdir follow the
+        // link and recursively delete files outside the checkout — the
+        // round-8 top-level is_link guard only protects the leaf
+        // component. Resolve the FULL path and refuse if it escapes
+        // the canonical repo root. realpath of a symlink resolves
+        // through every intermediate component, so anything pointed
+        // outside the checkout falls out cleanly. Broken symlinks have
+        // no resolved path; for those, fall back to using the literal
+        // join (the leaf is the symlink itself, which we unlink — no
+        // recursion possible).
+        $canonicalAbs = is_link($abs) && !file_exists($abs)
+            ? null  // broken symlink, unlinkable directly
+            : @realpath($abs);
+        if ($canonicalAbs !== null && $canonicalAbs !== false
+            && strpos($canonicalAbs . '/', $rootPrefix) !== 0
+        ) {
+            // Resolved path escapes the checkout. Refuse to touch it.
+            // Record as failed so the caller preserves the manifest
+            // and the user can investigate.
+            $failed[] = $rel;
+            continue;
+        }
         if (is_dir($abs) && !is_link($abs)) {
             envlite_rrmdir($abs);
         } else {

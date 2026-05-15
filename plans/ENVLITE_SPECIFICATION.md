@@ -1320,6 +1320,22 @@ prompting) removes each entry, then removes `.cache/envlite/` itself. Manifest
 order is the order envlite wrote things; since users are not supposed
 to edit the manifest, that order is well-defined.
 
+**Containment check.** Before each delete, `clean` resolves the
+manifest entry's absolute path with `realpath()` and verifies the
+resolved path stays under the canonical repo root. The top-level
+symlink guard in `rrmdir` only protects the leaf component of a
+single manifest entry; an **ancestor** symlink (e.g. the user
+replaced `src/wp-content/plugins` with a symlink to
+`/tmp/shared-plugins`) is followed by `is_dir()`/`scandir()` on the
+deeper manifest entry path, and `rrmdir` would recursively delete
+the symlink target without realizing the path escapes the checkout.
+Entries whose resolved path escapes are marked as failed; the
+manifest and state are preserved so the user can inspect and resolve
+the situation manually. Broken symlinks (which have no `realpath`
+resolution) skip the containment check — the leaf is the symlink
+itself, an `@unlink` of which is by definition a single-inode
+operation that cannot escape.
+
 The final `.cache/envlite/` removal is **recursive** (rrmdir, not a
 single `rmdir`). Atomic writes can leave temp siblings of
 `manifest`/`state`/`port` behind on an interrupted run, and an

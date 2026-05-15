@@ -287,6 +287,52 @@ function test_clean_walks_manifest_when_state_dir_is_symlink_to_directory() {
         'symlink target dir must survive (round 8 safety contract)');
 }
 
+function test_clean_apply_refuses_when_ancestor_is_symlink_to_outside() {
+    // Round 24 P1 regression: rrmdir's top-level is_link guard only
+    // protects the leaf component. When a manifest entry's PARENT (or
+    // any ancestor) has been replaced with a symlink to outside the
+    // checkout, is_dir($abs) for the leaf path resolves through the
+    // ancestor symlink and returns true for a real directory at the
+    // target. envlite_rrmdir then recursively deletes outside the
+    // checkout — a `clean --force` could wipe data the user pointed
+    // the symlink at.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $repo = envlite_test_tmpdir('clean-ancestor-symlink');
+    // Build a real "outside" tree that must survive.
+    $outside = envlite_test_tmpdir('clean-ancestor-symlink-outside');
+    mkdir("$outside/sqlite-database-integration", 0755, true);
+    file_put_contents("$outside/sqlite-database-integration/precious", 'MUST_SURVIVE');
+    file_put_contents("$outside/peer-file", 'peer-MUST_SURVIVE');
+
+    // Inside the checkout, the manifest claims envlite owns
+    // src/wp-content/plugins/sqlite-database-integration as a `dir`
+    // entry — but the user (or an attacker) has replaced the parent
+    // `src/wp-content/plugins` with a symlink to $outside.
+    mkdir("$repo/src/wp-content", 0755, true);
+    symlink($outside, "$repo/src/wp-content/plugins");
+
+    $manifest = [
+        'src/wp-content/plugins/sqlite-database-integration' => 'dir',
+    ];
+    $failed = envlite_clean_apply($repo, envlite_clean_collect($manifest));
+
+    envlite_assert_eq(
+        ['src/wp-content/plugins/sqlite-database-integration'],
+        $failed,
+        'clean_apply must refuse entries whose resolved path escapes the checkout'
+    );
+    envlite_assert_eq(
+        'MUST_SURVIVE',
+        file_get_contents("$outside/sqlite-database-integration/precious"),
+        'symlink-target contents must NOT be touched by clean_apply'
+    );
+    envlite_assert_eq(
+        'peer-MUST_SURVIVE',
+        file_get_contents("$outside/peer-file"),
+        'peers of the symlink target must also be untouched'
+    );
+}
+
 function test_rrmdir_refuses_to_recurse_into_symlinked_directory() {
     // Round 8 P1 regression: if envlite_rrmdir is invoked on a symlink
     // that points to a real directory, the unguarded scandir would
