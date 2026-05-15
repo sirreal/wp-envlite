@@ -435,22 +435,28 @@ function test_phase5_install_preserves_pin_when_fetcher_throws_pre_extract() {
     // is untouched by those paths, so the next `up` should still satisfy
     // the manifest + db.copy + pin skip predicate and run offline.
     //
-    // We exercise this by routing the install through a fetcher that
-    // throws immediately. The pin invalidation point sits AFTER fetch/
-    // verify/zip-open, so the throw aborts before any state mutation.
+    // Force the install path through the fetch by passing $rebuild=true
+    // (an earlier version of this test deleted db.copy to force the
+    // path; that ALSO broke the very predicate the test is meant to
+    // protect — an implementation that preserved the pin but dropped
+    // db.copy would have passed silently). With $rebuild=true,
+    // db.copy stays on disk; we then assert it AND the pin both
+    // survive the fetcher's throw, so the next offline run can skip.
     $dir = envlite_test_make_fixture_repo();
     $pin = ENVLITE_SQLITE_PLUGIN_SHA256;
+    $dbCopy = "$dir/src/wp-content/plugins/sqlite-database-integration/db.copy";
     envlite_manifest_save($dir, [
         'src/wp-content/plugins/sqlite-database-integration' => 'dir',
     ]);
     envlite_state_save($dir, ['phase5.recorded_pin_sha' => $pin]);
-    // Drop db.copy to force the re-extract path. Manifest + pin remain
-    // intact, so the skip predicate fails only on `is_file($dbCopy)`.
-    unlink("$dir/src/wp-content/plugins/sqlite-database-integration/db.copy");
+    envlite_assert(is_file($dbCopy), 'fixture must have db.copy present');
+    $dbCopyContentsBefore = file_get_contents($dbCopy);
 
     $threw = false;
     try {
-        envlite_phase5_install($dir, true, false, static function (): string {
+        // $rebuild = true forces re-entry into the download/extract path
+        // even though manifest + db.copy + pin all match.
+        envlite_phase5_install($dir, true, true, static function (): string {
             throw new \RuntimeException('fetcher offline');
         });
     } catch (\RuntimeException $e) {
@@ -462,6 +468,13 @@ function test_phase5_install_preserves_pin_when_fetcher_throws_pre_extract() {
     envlite_assert(isset($state['phase5.recorded_pin_sha']),
         'pin must remain in state after a pre-extract failure');
     envlite_assert_eq($pin, $state['phase5.recorded_pin_sha']);
+
+    // db.copy must survive too — combined with manifest + pin, the next
+    // offline `up` (without --rebuild) skips Phase 5 entirely.
+    envlite_assert(is_file($dbCopy),
+        'db.copy must survive a pre-extract failure so offline reruns can skip');
+    envlite_assert_eq($dbCopyContentsBefore, file_get_contents($dbCopy),
+        'db.copy contents must be byte-identical (no partial write through the failed install)');
 }
 
 function test_phase5_tripwire_throws_when_placeholder_missing() {
