@@ -1275,10 +1275,11 @@ binary exclusive-create mode (`'xb'` → `O_CREAT|O_EXCL`; never
 any ownership check can run, and never PHP's text mode `'t'`, which
 translates `\n` to `\r\n` on Windows and would make the on-disk
 bytes diverge from the hash), fsync, `rename()` over the final
-path. The manifest entry update uses the already-computed hash and
-happens after the content rename, also atomic-replace. envlite
-**never** calls `hash_file()` on the renamed target to populate the
-manifest — that would race with any subsequent writer. A SIGINT
+path. The manifest entry update uses the already-computed hash; per
+the **Manifest-first ordering** rule below, the manifest is saved
+*before* the content write, not after. envlite **never** calls
+`hash_file()` on the renamed target to populate the manifest — that
+would race with any subsequent writer. A SIGINT
 mid-operation leaves either fully-pre-write or fully-post-write state
 on disk; no half-written file claims a hash for content that wasn't
 durable. Random suffix + `O_EXCL` is a deliberate change from an
@@ -1417,12 +1418,10 @@ blockers.
 
 After a successful `envlite up`, the repo has:
 
-**envlite-managed (in manifest, removed by `clean`):**
+**envlite-managed (recorded in the manifest, removed by `clean`):**
 
 ```
-.cache/envlite/port                                            (Phase 1)
-.cache/envlite/manifest                                        (all phases)
-.cache/envlite/state                                           (Phases 2/3/4/5 — skip metadata)
+.cache/envlite/port                                      (Phase 1)
 src/wp-content/plugins/sqlite-database-integration/      (Phase 5)
 src/wp-content/db.php                                    (Phase 5)
 wp-tests-config.php                                      (Phase 6)
@@ -1430,10 +1429,19 @@ src/wp-config.php                                        (Phase 7)
 src/wp-content/database/.ht.sqlite                       (populated by Phase 8; observation-recorded — see below)
 ```
 
-`.cache/envlite/state` is removed by `clean` along with the rest of
-`.cache/envlite/`, but is **not** tracked by the manifest itself — it is
-operational metadata, not envlite-owned output (see "envlite state
-directory" above).
+**Operational state (not in the manifest, removed with `.cache/envlite/`):**
+
+```
+.cache/envlite/manifest                                  (all phases write into it; the manifest cannot hash-track itself)
+.cache/envlite/state                                     (Phases 2/3/4/5 — skip metadata; spec calls this "not tracked by the manifest")
+```
+
+The state-and-manifest pair belongs to envlite's private state
+directory. `clean` removes them by rrmdiring the whole
+`.cache/envlite/` subtree at the end, not by walking manifest
+entries. Listing them as manifest-tracked above would be incoherent
+(the manifest's hash-of-itself is recursive; the state file is by
+design un-tracked).
 
 **Side effects of `up` (not envlite-managed; remove with your usual tooling):**
 
