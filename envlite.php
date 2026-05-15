@@ -2077,7 +2077,14 @@ function envlite_rrmdir(string $dir): void {
         @unlink($dir);
         return;
     }
-    $items = scandir($dir);
+    // @-suppress: scandir on an unreadable directory writes an
+    // unprefixed PHP warning to stderr before returning false,
+    // violating the spec's "every diagnostic line carries the envlite
+    // prefix" contract. Callers detect the residual directory and
+    // surface the failure through their own envlite-prefixed paths
+    // (envlite_cmd_clean's `could not remove .cache/envlite/`,
+    // envlite_clean_apply's failed-entry list).
+    $items = @scandir($dir);
     if ($items === false) { return; }
     foreach ($items as $item) {
         if ($item === '.' || $item === '..') { continue; }

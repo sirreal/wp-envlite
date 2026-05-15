@@ -1316,12 +1316,10 @@ blockers.
 
 After a successful `envlite up`, the repo has:
 
-**envlite-managed (in manifest, removed by `clean`):**
+**envlite-managed (recorded in the manifest, removed by `clean`):**
 
 ```
-.cache/envlite/port                                            (Phase 1)
-.cache/envlite/manifest                                        (all phases)
-.cache/envlite/state                                           (Phases 2/3/4/5 — skip metadata)
+.cache/envlite/port                                      (Phase 1)
 src/wp-content/plugins/sqlite-database-integration/      (Phase 5)
 src/wp-content/db.php                                    (Phase 5)
 wp-tests-config.php                                      (Phase 6)
@@ -1329,10 +1327,19 @@ src/wp-config.php                                        (Phase 7)
 src/wp-content/database/.ht.sqlite                       (populated by Phase 8; observation-recorded — see below)
 ```
 
-`.cache/envlite/state` is removed by `clean` along with the rest of
-`.cache/envlite/`, but is **not** tracked by the manifest itself — it is
-operational metadata, not envlite-owned output (see "envlite state
-directory" above).
+**Operational state (not in the manifest, removed with `.cache/envlite/`):**
+
+```
+.cache/envlite/manifest                                  (all phases write into it; the manifest cannot hash-track itself)
+.cache/envlite/state                                     (Phases 2/3/4/5 — skip metadata; spec calls this "not tracked by the manifest")
+```
+
+The state-and-manifest pair belongs to envlite's private state
+directory. `clean` removes them by rrmdiring the whole
+`.cache/envlite/` subtree at the end, not by walking manifest
+entries. Listing them as manifest-tracked above would be incoherent
+(the manifest's hash-of-itself is recursive; the state file is by
+design un-tracked).
 
 **Side effects of `up` (not envlite-managed; remove with your usual tooling):**
 
