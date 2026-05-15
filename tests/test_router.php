@@ -10,6 +10,25 @@ function envlite_test_router_pick_free_port(): int {
     return $port;
 }
 
+/**
+ * Issue an HTTP GET to the test router and return the status line +
+ * body. The helper isolates `$http_response_header` inside its own
+ * scope so a request that fails before the server returns headers
+ * cannot leak stale headers into the caller's assertions on the next
+ * loop iteration — exactly the masking pattern codex flagged in
+ * round 14.
+ *
+ * @return array{status: ?string, body: ?string}
+ */
+function envlite_test_router_request(int $port, string $path): array {
+    $ctx = stream_context_create(['http' => ['ignore_errors' => true]]);
+    $body = @file_get_contents("http://127.0.0.1:$port$path", false, $ctx);
+    return [
+        'status' => $http_response_header[0] ?? null,
+        'body'   => $body === false ? null : $body,
+    ];
+}
+
 function envlite_test_router_wait_for_bind(int $port, float $timeout_seconds = 3.0): bool {
     $deadline = microtime(true) + $timeout_seconds;
     while (microtime(true) < $deadline) {
@@ -50,11 +69,10 @@ function test_router_blocks_ht_paths_case_insensitively() {
     try {
         envlite_assert(envlite_test_router_wait_for_bind($port));
         foreach (['/.ht-test', '/.HT-test', '/.Ht-test'] as $reqPath) {
-            $ctx = stream_context_create(['http' => ['ignore_errors' => true]]);
-            $body = @file_get_contents("http://127.0.0.1:$port$reqPath", false, $ctx);
-            envlite_assert(strpos($http_response_header[0] ?? '', '403') !== false,
-                "expected 403 for $reqPath, got: " . ($http_response_header[0] ?? 'no headers'));
-            envlite_assert(strpos($body ?: '', 'SECRET') === false,
+            $r = envlite_test_router_request($port, $reqPath);
+            envlite_assert(strpos($r['status'] ?? '', '403') !== false,
+                "expected 403 for $reqPath, got: " . ($r['status'] ?? 'no headers'));
+            envlite_assert(strpos($r['body'] ?? '', 'SECRET') === false,
                 "$reqPath leaked file bytes");
         }
     } finally {
@@ -91,12 +109,11 @@ function test_router_serves_static_file_with_percent_encoded_name() {
 
     try {
         envlite_assert(envlite_test_router_wait_for_bind($port));
-        $ctx = stream_context_create(['http' => ['ignore_errors' => true]]);
-        $body = @file_get_contents("http://127.0.0.1:$port/my%20photo.jpg", false, $ctx);
-        envlite_assert(strpos($http_response_header[0] ?? '', '200') !== false,
-            'expected 200 for percent-encoded static file, got: ' . ($http_response_header[0] ?? 'no headers'));
-        envlite_assert($body === $payload,
-            'expected upload bytes, got: ' . substr($body ?: '', 0, 100));
+        $r = envlite_test_router_request($port, '/my%20photo.jpg');
+        envlite_assert(strpos($r['status'] ?? '', '200') !== false,
+            'expected 200 for percent-encoded static file, got: ' . ($r['status'] ?? 'no headers'));
+        envlite_assert($r['body'] === $payload,
+            'expected upload bytes, got: ' . substr($r['body'] ?? '', 0, 100));
     } finally {
         foreach ($pipes as $p) { if (is_resource($p)) { @fclose($p); } }
         $status = @proc_get_status($proc);
@@ -130,11 +147,10 @@ function test_router_blocks_percent_encoded_ht_paths() {
     try {
         envlite_assert(envlite_test_router_wait_for_bind($port));
         foreach (['/%2Eht-test', '/%2eht-test', '/%2E%48%54-test'] as $reqPath) {
-            $ctx = stream_context_create(['http' => ['ignore_errors' => true]]);
-            $body = @file_get_contents("http://127.0.0.1:$port$reqPath", false, $ctx);
-            envlite_assert(strpos($http_response_header[0] ?? '', '403') !== false,
-                "expected 403 for $reqPath, got: " . ($http_response_header[0] ?? 'no headers'));
-            envlite_assert(strpos($body ?: '', 'SECRET') === false,
+            $r = envlite_test_router_request($port, $reqPath);
+            envlite_assert(strpos($r['status'] ?? '', '403') !== false,
+                "expected 403 for $reqPath, got: " . ($r['status'] ?? 'no headers'));
+            envlite_assert(strpos($r['body'] ?? '', 'SECRET') === false,
                 "$reqPath leaked file bytes");
         }
     } finally {
@@ -179,11 +195,10 @@ function test_router_blocks_backslash_segmented_ht_paths() {
     try {
         envlite_assert(envlite_test_router_wait_for_bind($port));
         foreach (['/foo%5C.ht-test', '/wp-content%5C.ht-test', '/a%5cb%5c.ht-test'] as $reqPath) {
-            $ctx = stream_context_create(['http' => ['ignore_errors' => true]]);
-            $body = @file_get_contents("http://127.0.0.1:$port$reqPath", false, $ctx);
-            envlite_assert(strpos($http_response_header[0] ?? '', '403') !== false,
-                "expected 403 for $reqPath (backslash-segmented .ht), got: " . ($http_response_header[0] ?? 'no headers'));
-            envlite_assert(strpos($body ?: '', 'FALLTHROUGH') === false,
+            $r = envlite_test_router_request($port, $reqPath);
+            envlite_assert(strpos($r['status'] ?? '', '403') !== false,
+                "expected 403 for $reqPath (backslash-segmented .ht), got: " . ($r['status'] ?? 'no headers'));
+            envlite_assert(strpos($r['body'] ?? '', 'FALLTHROUGH') === false,
                 "$reqPath leaked to front controller");
         }
     } finally {
@@ -219,11 +234,10 @@ function test_router_rejects_paths_containing_nul_bytes() {
     try {
         envlite_assert(envlite_test_router_wait_for_bind($port));
         foreach (['/%00', '/foo%00bar', '/wp-content/uploads/%00.jpg'] as $reqPath) {
-            $ctx = stream_context_create(['http' => ['ignore_errors' => true]]);
-            $body = @file_get_contents("http://127.0.0.1:$port$reqPath", false, $ctx);
-            envlite_assert(strpos($http_response_header[0] ?? '', '400') !== false,
-                "expected 400 for $reqPath, got: " . ($http_response_header[0] ?? 'no headers'));
-            envlite_assert(strpos($body ?: '', 'FALLTHROUGH') === false,
+            $r = envlite_test_router_request($port, $reqPath);
+            envlite_assert(strpos($r['status'] ?? '', '400') !== false,
+                "expected 400 for $reqPath, got: " . ($r['status'] ?? 'no headers'));
+            envlite_assert(strpos($r['body'] ?? '', 'FALLTHROUGH') === false,
                 "$reqPath must not reach the front controller");
         }
     } finally {
