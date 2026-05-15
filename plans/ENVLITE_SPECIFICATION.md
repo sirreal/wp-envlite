@@ -1204,11 +1204,27 @@ triggers and different contracts:
   next `up` can skip work. Not consulted by `clean` (the file is wiped
   with the rest of `.cache/envlite/`).
 
-State entries are written **after** their phase's subprocess exits 0,
-never before. An interrupted phase leaves the previous state value in
-place (or no entry, on first run); the next `up` therefore re-runs
-that phase. False-positive re-runs are acceptable; false-positive
-skips are not.
+State entries follow an **invalidate-before-run + record-on-success**
+pattern. Before a phase touches its outputs (`npm ci`,
+`composer install`, `npm run build:dev`, the SQLite plugin extract),
+envlite drops any pre-existing recorded value for that phase from
+`.cache/envlite/state` and writes the state file. The new value is
+re-recorded only when the phase's subprocess exits 0 and the
+on-disk output has been verified. An interrupted phase therefore
+leaves NO recorded value (the old one was dropped at start); the
+next `up` re-runs that phase. False-positive re-runs are acceptable;
+false-positive skips are not.
+
+The earlier draft of this paragraph claimed an interrupted phase
+left the previous value in place. That contract is unsafe: every
+listed phase writes its outputs incrementally (npm ci populates
+`node_modules/`, composer install populates `vendor/`, build:dev
+writes into `src/wp-includes/{js,css,blocks}`, extractTo creates
+`db.copy` early in the zip stream). A partial run paired with the
+unchanged recorded hash would let the next `up` satisfy its skip
+predicate against half-written outputs. The invalidate-before-run
+rule is the only one that guarantees no false-positive skip after
+an interrupt.
 
 The `--rebuild` flag causes `up` to read `.cache/envlite/state` as if it
 were empty for that invocation only. Successful phases re-record state

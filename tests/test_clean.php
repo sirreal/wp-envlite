@@ -293,6 +293,63 @@ function test_clean_walks_manifest_when_state_dir_is_symlink_to_directory() {
         'symlink target dir must survive (round 8 safety contract)');
 }
 
+function test_clean_apply_state_exception_only_applies_to_state_entries() {
+    // Round 28 P2 regression: the round-25 state-dir exception
+    // accepted ANY manifest entry whose resolved path landed under
+    // the state-dir target. An ancestor symlink to the state target
+    // would let arbitrary manifest paths resolve there and pass
+    // containment — clean would recurse outside the checkout through
+    // the symlink for a non-state-dir entry. Fix: scope the exception
+    // by the manifest key string (`.cache/envlite/...` only).
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $repo = envlite_test_tmpdir('clean-state-scope');
+
+    // The state dir points outside the checkout (legitimate symlinked
+    // state setup). Pre-create the state target so realpath resolves.
+    $stateTarget = envlite_test_tmpdir('clean-state-scope-target');
+    mkdir("$repo/.cache");
+    symlink($stateTarget, "$repo/.cache/envlite");
+    file_put_contents("$stateTarget/port", "8421\n");
+
+    // The user has ALSO put an ancestor symlink at a non-state path
+    // that happens to point at the state target. This is bizarre but
+    // the round-25 exception silently allowed manifest entries under
+    // it to recurse through.
+    mkdir("$repo/src", 0755, true);
+    symlink($stateTarget, "$repo/src/wp-content");
+    // Make the deep manifest entry resolve to a real directory inside
+    // the symlink target so the leaf existence check doesn't skip it.
+    // Without this, clean_apply silently `continue`s before reaching
+    // the containment check.
+    mkdir("$stateTarget/plugins/sqlite-database-integration", 0755, true);
+    file_put_contents("$stateTarget/plugins/sqlite-database-integration/inner",
+        'inner-PRECIOUS');
+    // External content that must survive clean.
+    file_put_contents("$stateTarget/must-survive", 'PRECIOUS');
+
+    // Manifest claims two entries:
+    //   - .cache/envlite/port (state entry, exception applies, clean OK)
+    //   - src/wp-content/plugins/...  (NON-state entry, exception must
+    //     NOT apply even though it resolves under $stateTarget)
+    $manifest = [
+        '.cache/envlite/port' => hash('sha256', "8421\n"),
+        'src/wp-content/plugins/sqlite-database-integration' => 'dir',
+    ];
+    $failed = envlite_clean_apply($repo, envlite_clean_collect($manifest));
+
+    // The non-state entry must be flagged as failed (the exception
+    // doesn't cover it); the state entry should be removed cleanly.
+    envlite_assert(
+        in_array('src/wp-content/plugins/sqlite-database-integration', $failed, true),
+        'non-state entry resolving to state target must be flagged as failed'
+    );
+    envlite_assert_eq('PRECIOUS', file_get_contents("$stateTarget/must-survive"),
+        'state-target contents must not be touched via the non-state ancestor symlink');
+    envlite_assert_eq('inner-PRECIOUS',
+        file_get_contents("$stateTarget/plugins/sqlite-database-integration/inner"),
+        'inner directory reachable only via the non-state ancestor symlink must also survive');
+}
+
 function test_clean_apply_refuses_when_ancestor_is_symlink_to_outside() {
     // Round 24 P1 regression: rrmdir's top-level is_link guard only
     // protects the leaf component. When a manifest entry's PARENT (or

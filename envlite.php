@@ -1377,6 +1377,14 @@ function envlite_phase5_stage_temp_zip(string $tmpDir, string $bytes): string {
  * @return string|null `<ino>:<dev>` for an existing entry, `null` if absent
  */
 function envlite_phase5_path_signature(string $path): ?string {
+    // Bust PHP's per-request stat cache before the lstat. The
+    // signature helper drives the Phase 5 TOCTOU re-checks; a cached
+    // stat result populated by the initial scan would otherwise let
+    // the post-fetch/post-clear comparisons reach back into history
+    // and compare against pre-race inode/device numbers. Clearing
+    // the cache ensures the post-clear/pre-extract re-checks see the
+    // actual on-disk state at that moment.
+    clearstatcache(true, $path);
     $stat = @lstat($path);
     if ($stat === false || !is_array($stat)) { return null; }
     $ino = $stat['ino'] ?? $stat[1] ?? 0;
@@ -1398,6 +1406,16 @@ function envlite_phase5_path_signature(string $path): ?string {
  *   - resolved parent path escaping `realpath($repoRoot)`
  */
 function envlite_phase5_assert_parent_inside_repo(string $repoRoot, string $parentDir): void {
+    // Bust the stat AND realpath caches before resolving. realpath()'s
+    // cache is its own; clearstatcache(true, $path) invalidates both
+    // entries for the given path. The TOCTOU re-checks in
+    // envlite_phase5_apply_extract (and the pre-skip-predicate check
+    // in envlite_phase5_install) must compare current canonical paths,
+    // not whatever was cached from the initial scan — a race that
+    // swapped an ancestor symlink during the fetch window would
+    // otherwise be invisible.
+    clearstatcache(true, $repoRoot);
+    clearstatcache(true, $parentDir);
     $canonicalRoot = @realpath($repoRoot);
     $canonicalParent = @realpath($parentDir);
     if ($canonicalRoot === false || $canonicalParent === false) {
@@ -2401,7 +2419,22 @@ function envlite_clean_apply(string $repoRoot, array $paths): array {
         if ($canonicalAbs !== null && $canonicalAbs !== false) {
             $canonicalAbsNorm = envlite_path_to_forward_slashes($canonicalAbs);
             $insideRepo = strpos($canonicalAbsNorm . '/', $rootPrefix) === 0;
-            $insideState = $stateDirPrefix !== null
+            // The state-dir exception is path-prefix-scoped: only
+            // manifest entries whose RELATIVE path starts with
+            // `.cache/envlite/` are allowed to resolve under the
+            // (possibly-symlinked) state directory. Without the
+            // scoping, an ancestor symlink like
+            // `src/wp-content/plugins → <state-target>` would let any
+            // manifest entry under `src/wp-content/plugins/...` resolve
+            // into the state target and pass containment — clean would
+            // then recurse outside the checkout through the
+            // user-installed symlink. The scoped check accepts only
+            // `.cache/envlite/port` and friends, which is precisely
+            // the case the state-dir exception exists for.
+            $isStateEntry = strpos($rel, '.cache/envlite/') === 0
+                || $rel === '.cache/envlite';
+            $insideState = $isStateEntry
+                && $stateDirPrefix !== null
                 && strpos($canonicalAbsNorm . '/', $stateDirPrefix) === 0;
             if (!$insideRepo && !$insideState) {
                 // Resolved path escapes both the checkout AND the
