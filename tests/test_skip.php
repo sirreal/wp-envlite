@@ -56,6 +56,90 @@ function test_skip_rule_phase2_recorded_hash_match_means_skip() {
     envlite_assert($shouldSkip, 'phase 2 should skip when hash matches and dir exists');
 }
 
+function test_phase3_head_sha_returns_null_outside_git_repo() {
+    // A directory with no .git/ at all: the helper returns null so the
+    // skip rule short-circuits to comparing the other recorded hashes
+    // and a null === null match still allows skip on a non-git tree.
+    $dir = envlite_test_tmpdir('phase3-head-no-git');
+    envlite_assert_eq(null, envlite_phase3_head_sha($dir));
+}
+
+function test_phase3_head_sha_detached_head() {
+    // .git/HEAD contains a literal 40-hex commit SHA (detached HEAD
+    // after a `git checkout <commit>`). The helper returns the SHA
+    // directly without any ref resolution.
+    $dir = envlite_test_tmpdir('phase3-head-detached');
+    mkdir("$dir/.git", 0755, true);
+    $sha = str_repeat('a1b2c3d4', 5); // 40 hex chars
+    file_put_contents("$dir/.git/HEAD", "$sha\n");
+    envlite_assert_eq($sha, envlite_phase3_head_sha($dir));
+}
+
+function test_phase3_head_sha_resolves_loose_ref() {
+    // .git/HEAD points at refs/heads/<branch>; the loose ref file
+    // exists at .git/refs/heads/<branch>. The helper reads through
+    // the indirection and returns the resolved SHA.
+    $dir = envlite_test_tmpdir('phase3-head-loose');
+    mkdir("$dir/.git/refs/heads", 0755, true);
+    $sha = str_repeat('b', 40);
+    file_put_contents("$dir/.git/HEAD", "ref: refs/heads/feature-branch\n");
+    file_put_contents("$dir/.git/refs/heads/feature-branch", "$sha\n");
+    envlite_assert_eq($sha, envlite_phase3_head_sha($dir));
+}
+
+function test_phase3_head_sha_resolves_packed_ref() {
+    // Common shape after a `git gc` or `git pack-refs --all`: loose
+    // ref file is missing and the SHA lives in .git/packed-refs.
+    $dir = envlite_test_tmpdir('phase3-head-packed');
+    mkdir("$dir/.git", 0755, true);
+    $sha = str_repeat('c', 40);
+    file_put_contents("$dir/.git/HEAD", "ref: refs/heads/trunk\n");
+    file_put_contents("$dir/.git/packed-refs",
+        "# pack-refs with: peeled fully-peeled sorted\n"
+        . "$sha refs/heads/trunk\n"
+        . "^abc123\n"
+    );
+    envlite_assert_eq($sha, envlite_phase3_head_sha($dir));
+}
+
+function test_phase3_head_sha_returns_null_when_ref_unresolvable() {
+    // HEAD points at a ref that isn't a loose file AND isn't in
+    // packed-refs (broken state). Helper returns null — better than
+    // returning the literal "ref: ..." string which would never match
+    // a real SHA.
+    $dir = envlite_test_tmpdir('phase3-head-broken-ref');
+    mkdir("$dir/.git", 0755, true);
+    file_put_contents("$dir/.git/HEAD", "ref: refs/heads/missing-branch\n");
+    envlite_assert_eq(null, envlite_phase3_head_sha($dir));
+}
+
+function test_skip_rule_phase3_head_sha_changed_means_run() {
+    // Round 22 regression: phases 2 and 4 skipped (lockfiles unchanged)
+    // but the user ran `git pull` so HEAD moved. Without the head_sha
+    // component, the round-0 skip rule would have skipped Phase 3 and
+    // left stale build artifacts. With it, the comparison forces a
+    // rebuild.
+    $dir = envlite_test_tmpdir('phase3-head-changed');
+    mkdir("$dir/.git", 0755, true);
+    $oldSha = str_repeat('d', 40);
+    $newSha = str_repeat('e', 40);
+    file_put_contents("$dir/.git/HEAD", "$newSha\n"); // detached HEAD at new SHA
+    mkdir("$dir/src/wp-includes/js/dist", 0755, true);
+    $state = [
+        'phase3.recorded_npm_hash'      => 'npmhash',
+        'phase3.recorded_composer_hash' => 'composerhash',
+        'phase3.recorded_head_sha'      => $oldSha,
+    ];
+    $currentHeadSha = envlite_phase3_head_sha($dir);
+    envlite_assert_eq($newSha, $currentHeadSha);
+    $shouldSkip = is_dir("$dir/src/wp-includes/js/dist")
+        && ($state['phase3.recorded_npm_hash'] ?? null) === 'npmhash'
+        && ($state['phase3.recorded_composer_hash'] ?? null) === 'composerhash'
+        && ($state['phase3.recorded_head_sha'] ?? null) === $currentHeadSha;
+    envlite_assert(!$shouldSkip,
+        'phase 3 must NOT skip when HEAD has moved since the last successful build');
+}
+
 function test_skip_rule_phase2_drift_means_run() {
     // Recorded hash does not match current → must NOT skip.
     $dir = envlite_test_skip_make_repo('phase2-drift', 'newcontents');
