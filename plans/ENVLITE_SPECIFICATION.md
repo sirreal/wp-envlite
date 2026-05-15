@@ -233,9 +233,19 @@ exist on disk under the docroot so `php -S` serves them directly,
 and otherwise `require`s `<DOCUMENT_ROOT>/index.php`. WordPress's
 index.php → wp-blog-header.php → wp-load.php → wp-settings.php
 chain handles the rest, including `wp-admin/install.php` on first
-hit and pretty-permalink fallback once installed. The port is
-consumed only by the dev-server launch at the end of `up`, never
-during the setup phases or under `up --no-serve`.
+hit and pretty-permalink fallback once installed.
+
+The router itself never reads the port: `php -S` binds it, and the
+router's only request-time inputs are the URI and `DOCUMENT_ROOT`.
+Within the setup phases the port is still used twice — Phase 7
+stamps `WP_HOME` / `WP_SITEURL` with `http://127.0.0.1:<port>` so
+WordPress generates correct canonical URLs, and Phase 8 sets
+`$_SERVER['HTTP_HOST']` to `127.0.0.1:<port>` so `wp_install()` runs
+in the same host context the live site will use. Phase 1's port
+discovery therefore runs unconditionally — including under
+`--no-serve` — so those config writes have a stable value. The
+`--no-serve` short-circuit suppresses only the final `php -S`
+launch, not port discovery, the wp-config stamp, or the install.
 
 The router applies `rawurldecode()` to the URI path before its
 filesystem and `.ht` checks. `php -S` decodes percent-encoding
