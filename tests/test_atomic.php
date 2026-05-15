@@ -93,6 +93,43 @@ function test_atomic_write_replaces_symlink_at_destination() {
         'symlink target must be untouched (no truncate-through-symlink)');
 }
 
+function test_write_managed_file_content_first_for_unowned_overwrite() {
+    // Round 32 P2 regression: round-29's manifest-first ordering
+    // poisoned the manifest with envlite's new hash *before*
+    // atomic_write ran. A process kill (SIGKILL, panic) between
+    // manifest_save and atomic_write left the user's pre-existing
+    // content on disk + an envlite-claimed manifest entry — and a
+    // later `clean --force` would delete the user's file. For unowned
+    // and drifted destinations the helper now writes the content
+    // FIRST, then commits the manifest entry. The crash window's
+    // failure mode becomes "envlite content on disk, no manifest
+    // entry" — clean orphans the file but does NOT delete user
+    // content.
+    //
+    // Exercise the content-first path: pre-existing UNOWNED file at
+    // the destination (no manifest entry); call write_managed_file
+    // with new bytes; verify the file ends up byte-equal to the new
+    // bytes AND the manifest now records the new hash.
+    $dir = envlite_test_tmpdir('write-managed-content-first-unowned');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    file_put_contents("$dir/output.txt", 'user-content');
+
+    $manifest = [];  // unowned: no prior entry
+    envlite_manifest_save($dir, $manifest);
+
+    envlite_write_managed_file(
+        $dir, $manifest, 'output.txt', "envlite-content\n", "$dir/output.txt"
+    );
+
+    envlite_assert_eq("envlite-content\n", file_get_contents("$dir/output.txt"),
+        'file must hold envlite content after the write');
+    envlite_assert_eq(hash('sha256', "envlite-content\n"), $manifest['output.txt'],
+        'manifest must record the new hash after content-first commit');
+    $onDisk = envlite_manifest_load($dir);
+    envlite_assert_eq($manifest, $onDisk,
+        'in-memory and on-disk manifests must match after content-first write');
+}
+
 function test_write_managed_file_rolls_back_manifest_when_atomic_write_fails() {
     // Round 29 P2 regression: round-23's manifest-first ordering meant
     // a failed atomic_write left the manifest claiming envlite owns a

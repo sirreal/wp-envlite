@@ -1304,11 +1304,39 @@ pre-existing user file or symlink at the temp path collide with
 envlite's write — `wb` would have truncated it (or followed the
 symlink to truncate its target) before ownership could be evaluated.
 
-**Manifest-first ordering with rollback.** Callers writing a managed
-file MUST update and `envlite_manifest_save` the manifest *before*
-invoking `envlite_atomic_write` for the content. The hash is computed
-up front from the in-memory bytes so the manifest already has the
-correct SHA at save time.
+**Ordering with rollback.** `envlite_write_managed_file` picks the
+manifest-vs-content write order based on the **current ownership
+state** of the destination, computed with `envlite_ownership` before
+either write happens. The two orders have asymmetric failure modes
+under a process kill (SIGKILL, panic, OOM) between the two writes,
+and neither order is uniformly safer — the right choice depends on
+what's already on disk.
+
+  - **absent** or **owned_clean** (envlite already wrote a previous
+    version): manifest-first. A crash between `manifest_save` and
+    `atomic_write` leaves the file either missing (absent case) or
+    holding envlite's prior content (owned_clean case). Both states
+    classify as `owned_clean` on the next `up`'s ownership check —
+    envlite re-stamps without prompting, and `clean` removing
+    envlite's prior content is the documented behavior.
+
+  - **owned_drifted** or **unowned**: content-first. The on-disk
+    file pre-write is either the user's own content (unowned) or
+    envlite-owned content the user has modified (drifted). The
+    user has authorized THIS overwrite via prompt or `--force`,
+    but manifest-first would put envlite's NEW hash in the
+    manifest while the user's pre-existing content was still on
+    disk. A process kill in that window would leave the manifest
+    claiming envlite owns the user's file, and a later
+    `clean --force` would delete user-authored content without
+    any prompt. Content-first means a crash between
+    `atomic_write` and `manifest_save` leaves the new file on
+    disk with no manifest entry → the next `clean` skips it
+    (orphan) instead of unlinking unprompted, which is the
+    safer failure mode.
+
+The hash is computed up front from the in-memory bytes so the manifest
+already has the correct SHA at save time.
 
 The failure mode under crash-or-interrupt between the two steps is
 "manifest claims envlite owns X but X is missing on disk", which
@@ -1389,10 +1417,16 @@ with a symlink to `/tmp/shared-plugins`) is followed by
 `rrmdir` would recursively delete the symlink target without
 realizing the path escapes the checkout. Entries whose resolved path
 escapes are marked as failed; the manifest and state are preserved
-so the user can inspect and resolve the situation manually. Broken
-symlinks (which have no `realpath` resolution) skip the containment
-check — the leaf is the symlink itself, an `@unlink` of which is by
-definition a single-inode operation that cannot escape.
+so the user can inspect and resolve the situation manually.
+
+Dangling (broken) symlinks at the leaf have no `realpath` of their
+own. The containment check still runs against the resolved PARENT
+directory: `realpath(dirname($abs))` is computed, the leaf's
+basename is appended to form the synthetic canonical path, and the
+prefix-containment rule is applied. Without the parent check, an
+`@unlink` of a leaf located under an escaped ancestor symlink would
+still resolve through that ancestor and remove a symlink in an
+external location.
 
 The state-directory exception exists because a symlinked
 `.cache/envlite/` (a spec-supported user setup — see the

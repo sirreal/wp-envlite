@@ -186,6 +186,46 @@ function envlite_write_managed_file(
     string $bytes,
     string $absPath
 ): void {
+    // Pick the manifest-vs-content write order based on the current
+    // ownership state of $absPath:
+    //
+    //   - absent / owned_clean (envlite already wrote a previous
+    //     version): manifest-first. Crash between manifest_save and
+    //     atomic_write leaves the on-disk file as either missing
+    //     (absent case) or an older envlite-owned version (clean
+    //     case). Both are safe — envlite_ownership classifies the
+    //     missing case as owned_clean (safe to recreate); the older-
+    //     version case is still envlite's own content for clean to
+    //     remove.
+    //
+    //   - owned_drifted / unowned: content-first. The on-disk file
+    //     pre-write is either the user's own content (unowned) or
+    //     envlite's content modified by the user (drifted). The user
+    //     has authorized THIS overwrite via prompt or --force, but
+    //     manifest-first would put envlite's hash in the manifest
+    //     while the user's content was still on disk — a process
+    //     kill (SIGKILL, panic, OOM) between manifest_save and
+    //     atomic_write would leave that poisoned state, and a later
+    //     `clean --force` could delete user-authored content without
+    //     any prompt. Writing the file first means a crash between
+    //     atomic_write and manifest_save leaves the new file on disk
+    //     with no manifest entry → `clean` skips it (orphan), which
+    //     is the safer failure mode.
+    [$exists, $current] = envlite_path_inspect($absPath);
+    $ownership = envlite_ownership($manifest, $relPath, $exists, $current);
+
+    if ($ownership === 'owned_drifted' || $ownership === 'unowned') {
+        // Content-first. atomic_write may throw — that's the caller's
+        // problem to handle (envlite_phase_guard surfaces it as a
+        // phase-N error). On throw, the manifest hasn't been touched
+        // yet, so no rollback is needed.
+        envlite_atomic_write($absPath, $bytes);
+        $manifest[$relPath] = hash('sha256', $bytes);
+        envlite_manifest_save($repoRoot, $manifest);
+        return;
+    }
+
+    // Manifest-first with rollback on atomic_write failure.
     $priorEntry = $manifest[$relPath] ?? null;
     $manifest[$relPath] = hash('sha256', $bytes);
     envlite_manifest_save($repoRoot, $manifest);
@@ -2533,16 +2573,15 @@ function envlite_clean_apply(string $repoRoot, array $paths): array {
 }
 
 /**
- * Cross-platform normalizer: rewrite `\` to `/` regardless of host OS.
- * Used by clean's containment check to compare paths produced by
- * `realpath()` (which returns OS-native separators) against a fixed
- * forward-slash convention. Distinct from envlite_path_to_posix(),
- * which preserves `\` on Unix because the character is a legal
- * filename byte there — that function operates on USER-supplied paths,
- * while this one operates on realpath()'d strings that already include
- * any necessary canonicalization.
+ * Normalize Windows backslash separators in a `realpath()` result to
+ * forward slashes for the containment prefix-match. On Unix `\` is a
+ * legal filename byte — checkouts at `/tmp/wp\dev` are valid and must
+ * NOT be rewritten or the containment check would conflate them with
+ * unrelated `/tmp/wp/dev/...` paths. Gate the substitution on the
+ * host OS exactly the way `envlite_path_to_posix()` does (round 22).
  */
 function envlite_path_to_forward_slashes(string $path): string {
+    if (PHP_OS_FAMILY !== 'Windows') { return $path; }
     return str_replace('\\', '/', $path);
 }
 
