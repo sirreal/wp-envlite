@@ -68,7 +68,31 @@ function envlite_manifest_path(string $repoRoot): string {
 
 function envlite_manifest_load(string $repoRoot): array {
     $path = envlite_manifest_path($repoRoot);
-    if (!is_file($path)) { return []; }
+    // Three states for the manifest path, each handled differently:
+    //
+    //   absent   (file_exists is false AND is_link is false) → empty
+    //            manifest, returns [] normally. First run on a fresh
+    //            checkout lands here.
+    //
+    //   exists-and-regular-file → read and parse below. Read failure
+    //            (permission denied, IO error) throws — see comment
+    //            block after the @file_get_contents call.
+    //
+    //   exists-but-not-regular (directory, broken symlink, symlink to a
+    //            non-file, FIFO, etc.) → this used to slip past
+    //            `!is_file` as "absent" because is_file follows symlinks
+    //            and is false for everything non-regular. Silently
+    //            returning [] in this state causes the same
+    //            ownership-loss damage as a read failure: a following
+    //            `clean --force` wipes `.cache/envlite/` (along with
+    //            the manifest blocker) and orphans every previously
+    //            managed file. Treat it as a hard read failure.
+    if (!file_exists($path) && !is_link($path)) { return []; }
+    if (!is_file($path) || is_link($path)) {
+        throw new \RuntimeException(
+            "manifest at $path is not a regular file; refusing to load"
+        );
+    }
     // Distinguish "manifest does not exist" (empty list, fine) from
     // "manifest exists but we can't read it" (permission denied, IO
     // error). The latter must NOT be silently treated as empty: a

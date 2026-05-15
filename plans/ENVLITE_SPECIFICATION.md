@@ -1147,18 +1147,28 @@ envlite-owned path should run `envlite clean` and re-run `up`.
 (`clean` doesn't touch `node_modules/`, `vendor/`, or build artifacts,
 so the slow-to-rebuild parts survive a clean+`up` cycle.)
 
-**Manifest read failures.** A manifest file that exists on disk but
-cannot be read (permissions stripped, IO error) must NOT be silently
-interpreted as an empty manifest. `up` would then rewrite the manifest
-with only the new entries and lose every prior ownership record;
-`clean --force` would remove `.cache/envlite/` while leaving every
-managed file orphaned (no longer in any manifest, but envlite has
-forgotten it ever wrote them). The loader throws a clear
-"cannot read manifest at <path>" RuntimeException so the caller can
-abort with the documented `envlite <sub>: ...` shape rather than
-quietly losing ownership history. Phases 5–7 surface this throw via
-their `envlite_phase_guard` wrappers; `clean` and the observation
-points catch it explicitly.
+**Manifest read failures.** A manifest path that exists on disk but
+cannot be loaded must NOT be silently interpreted as an empty
+manifest. Two classes of failure:
+
+  - The path is a regular file but unreadable (permissions stripped,
+    IO error) → throw `cannot read manifest at <path>`.
+  - The path exists but is **not** a regular file (a directory, a
+    broken symlink, a symlink to anywhere, a FIFO) → throw
+    `manifest at <path> is not a regular file; refusing to load`.
+    envlite never writes a symlink or non-regular entry at the
+    manifest path; finding one always means external interference.
+
+In either case, treating the load as empty would corrupt state: `up`
+would rewrite the manifest with only the new entries and lose every
+prior ownership record; `clean --force` would remove `.cache/envlite/`
+while leaving every managed file orphaned (no longer in any
+manifest, but envlite has forgotten it ever wrote them). The loader
+throws so the caller can abort with the documented
+`envlite <sub>: ...` shape rather than quietly losing ownership
+history. Phases 5–7 surface the throw via their
+`envlite_phase_guard` wrappers; `clean` and the observation points
+catch it explicitly.
 
 **Atomic writes.** Every file envlite writes — whether content
 (`wp-config.php`, `wp-tests-config.php`, etc.) or the manifest itself — uses the

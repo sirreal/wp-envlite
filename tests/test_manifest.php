@@ -5,6 +5,68 @@ function envlite_test_tmpdir(string $name): string {
     return $dir;
 }
 
+function test_manifest_load_throws_when_path_is_a_directory() {
+    // Round 14 regression: !is_file($path) used to return [] (empty
+    // manifest) when the path was a directory, hiding the same
+    // ownership-loss scenarios codex flagged in round 13: a `clean
+    // --force` would wipe `.cache/envlite/` and orphan every managed
+    // file. Now manifest_load throws on any non-regular existing path.
+    $dir = envlite_test_tmpdir('manifest-as-directory');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    mkdir("$dir/.cache/envlite/manifest"); // directory at the manifest path!
+    $thrown = null;
+    try {
+        envlite_manifest_load($dir);
+    } catch (\Throwable $e) {
+        $thrown = $e;
+    }
+    envlite_assert($thrown !== null,
+        'manifest_load must throw when the manifest path is a directory');
+    envlite_assert(strpos($thrown->getMessage(), 'not a regular file') !== false,
+        'error must explain why; got: ' . $thrown->getMessage());
+}
+
+function test_manifest_load_throws_when_path_is_broken_symlink() {
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_tmpdir('manifest-broken-symlink');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    symlink("$dir/.cache/envlite/does-not-exist", "$dir/.cache/envlite/manifest");
+    $thrown = null;
+    try {
+        envlite_manifest_load($dir);
+    } catch (\Throwable $e) {
+        $thrown = $e;
+    }
+    envlite_assert($thrown !== null,
+        'manifest_load must throw on a broken symlink at the manifest path');
+    envlite_assert(strpos($thrown->getMessage(), 'not a regular file') !== false,
+        'error must name the non-regular case; got: ' . $thrown->getMessage());
+}
+
+function test_manifest_load_throws_when_path_is_symlink_to_file() {
+    // A symlink to a regular file is non-regular for envlite's purposes
+    // — envlite never writes a symlink at the manifest path, so finding
+    // one means external interference. Refusing to load is safer than
+    // reading through it (especially because the symlink target could
+    // point anywhere on disk).
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_tmpdir('manifest-symlink-to-file');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    $target = $dir . '/external-manifest';
+    file_put_contents($target, str_repeat('a', 64) . "  some/path\n");
+    symlink($target, "$dir/.cache/envlite/manifest");
+    $thrown = null;
+    try {
+        envlite_manifest_load($dir);
+    } catch (\Throwable $e) {
+        $thrown = $e;
+    }
+    envlite_assert($thrown !== null,
+        'manifest_load must throw on a symlink at the manifest path');
+    envlite_assert(strpos($thrown->getMessage(), 'not a regular file') !== false,
+        'error must name the non-regular case; got: ' . $thrown->getMessage());
+}
+
 function test_manifest_load_throws_when_file_exists_but_unreadable() {
     // Round 13 regression: file_get_contents returns false on read
     // failure, and the prior implementation foreach'd the false and
