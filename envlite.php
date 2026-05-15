@@ -592,12 +592,25 @@ function envlite_proc_stream(array $cmd, ?string $cwd = null): int {
 }
 
 /**
+ * Picks the router script for `php -S`. Run from source, that is router.php
+ * sitting beside envlite.php. Run from a phar, __DIR__ is a phar:// path no
+ * separate `php -S` process can resolve, so the phar's own file path is used
+ * instead — the phar stub detects the cli-server SAPI and dispatches to the
+ * bundled router. Pure so tests exercise both branches.
+ */
+function envlite_dev_server_router(string $pharPath, string $sourceDir): string {
+    return $pharPath !== '' ? $pharPath : $sourceDir . '/router.php';
+}
+
+/**
  * Builds the argv passed to `php -S`. Excludes the binary itself —
  * pcntl_exec receives the binary as its first argument and the rest as $args.
  * On the Windows fallback path, envlite_run_dev_server prepends PHP_BINARY.
  */
 function envlite_dev_server_argv(string $repoRoot, int $port): array {
-    return ['-S', "127.0.0.1:$port", '-t', 'src', __DIR__ . '/router.php'];
+    $pharPath = class_exists('Phar', false) ? \Phar::running(false) : '';
+    $router = envlite_dev_server_router($pharPath, __DIR__);
+    return ['-S', "127.0.0.1:$port", '-t', 'src', $router];
 }
 
 /**
