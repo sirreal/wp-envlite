@@ -1490,6 +1490,20 @@ function envlite_phase5_apply_extract(
     // through. The spec is explicit that the containment check runs
     // "immediately before extractTo".
     envlite_phase5_assert_parent_inside_repo($repoRoot, $parentDir);
+    // Re-stat the plugin path itself too — the clear pass should have
+    // left it empty (signature null), but a race could have recreated
+    // a symlink at that path between the clear and now. extractTo
+    // would write through the recreated symlink, defeating the clear's
+    // whole purpose. Compare against null (post-clear expectation)
+    // rather than against the original signature, because the clear
+    // pass legitimately changed the path even on the success-after-
+    // non-empty-initial-state case.
+    $postClearSignature = envlite_phase5_path_signature($pluginDir);
+    if ($postClearSignature !== null) {
+        throw new \RuntimeException(
+            "phase 5: plugin path $pluginDir reappeared after clear; refusing to extract"
+        );
+    }
     // extractTo returns false on partial/failed extraction. Throwing
     // here means no subsequent state writes (manifest/state) record
     // the broken tree.
@@ -1676,6 +1690,15 @@ function envlite_phase5_install(
     }
 
     // Step 5: copy db.copy → db.php with manifest contract.
+    // Re-validate parent containment immediately before the db.copy
+    // read and db.php write. The cached-skip path runs the pre-skip
+    // check only ONCE before the predicate; an ancestor symlink swap
+    // between that check and this read would let the cached path
+    // read db.copy through a symlink target outside the checkout and
+    // write db.php from external content. The pre-extract path
+    // already runs apply_extract's own checks, but this revalidation
+    // covers both code paths uniformly.
+    envlite_phase5_assert_parent_inside_repo($repoRoot, dirname($pluginDir));
     if (!is_file($dbCopy)) {
         throw new \RuntimeException("phase 5: db.copy missing at $dbCopy after extraction");
     }
