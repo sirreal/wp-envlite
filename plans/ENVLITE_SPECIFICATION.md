@@ -1222,7 +1222,7 @@ so the slow-to-rebuild parts survive a clean+`up` cycle.)
 
 **Manifest read failures.** A manifest path that exists on disk but
 cannot be loaded must NOT be silently interpreted as an empty
-manifest. Two classes of failure:
+manifest. Three classes of failure:
 
   - The path is a regular file but unreadable (permissions stripped,
     IO error) → throw `cannot read manifest at <path>`.
@@ -1231,6 +1231,14 @@ manifest. Two classes of failure:
     `manifest at <path> is not a regular file; refusing to load`.
     envlite never writes a symlink or non-regular entry at the
     manifest path; finding one always means external interference.
+  - The state directory `.cache/envlite/` exists but lacks search/
+    read permission → `file_exists` and `is_link` both return false
+    on the manifest path because PHP can't traverse the parent.
+    Treating this as "manifest is absent" lets `clean --force` wipe
+    `.cache/envlite/` and orphan every managed file. Probe the
+    parent with `scandir`; if listing fails throw
+    `cannot read state directory <path>; manifest may exist but is
+    inaccessible`.
 
 In either case, treating the load as empty would corrupt state: `up`
 would rewrite the manifest with only the new entries and lose every
