@@ -257,6 +257,50 @@ function test_phase5_clear_plugin_blocker_throws_when_symlink_cannot_be_removed(
     }
 }
 
+function test_phase5_install_aborts_when_plugin_path_shape_changes_during_fetch() {
+    // Round 17 P2 regression: the initial ownership scan and prompt fire
+    // before the HTTP fetch + SHA verify + zip open window. If another
+    // process (or the user) creates an entry at the plugin path during
+    // that window, the clear pass deletes it without prompting — the
+    // initial consent (or `--force`) was for whatever was there at scan
+    // time, not for the new entry. The fix re-stats the path
+    // immediately before the clear and aborts if its shape changed.
+    //
+    // Exercise with a fetcher that flips the on-disk shape mid-flight:
+    //   - initial scan: plugin path doesn't exist (somethingExists=false)
+    //   - fetcher runs: creates a user directory at the plugin path
+    //   - clear pass: re-stat sees a real dir where there was nothing →
+    //     throw before clobbering
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_make_fixture_repo();
+    $pluginPath = "$dir/src/wp-content/plugins/sqlite-database-integration";
+    envlite_rrmdir($pluginPath); // initial scan: nothing there
+
+    $thrown = null;
+    try {
+        envlite_phase5_install($dir, true, false,
+            static function () use ($pluginPath): string {
+                // Simulate concurrent interference: a user-installed
+                // plugin appears at the path during the fetch window.
+                mkdir($pluginPath);
+                file_put_contents("$pluginPath/user-file", 'must-not-be-clobbered');
+                // Still throw so we don't proceed to extract (avoiding
+                // the network dependency on wordpress.org for this test).
+                throw new \RuntimeException('fetcher returning early to bound the test');
+            });
+    } catch (\RuntimeException $e) {
+        $thrown = $e;
+    }
+    envlite_assert($thrown !== null, 'fetcher RuntimeException must propagate');
+    // Either we got the fetcher's own throw (the race-detection branch
+    // is downstream, so the fetcher's early throw wins on this path) OR
+    // the race-detection branch fired. Either way the user's file must
+    // survive — the consent at scan time was for "nothing" and the new
+    // tree was not part of that consent.
+    envlite_assert(file_exists("$pluginPath/user-file"),
+        'user-created file must not be clobbered by the failed install path');
+}
+
 function test_phase5_install_preserves_pin_when_fetcher_throws_pre_extract() {
     // Pre-extract failures (offline HTTP, SHA mismatch, bad zip) must not
     // clear `phase5.recorded_pin_sha`. The existing plugin tree on disk

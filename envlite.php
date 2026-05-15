@@ -1286,12 +1286,30 @@ function envlite_phase5_install(
             // download), forcing every subsequent `up` to re-fetch.
             envlite_phase5_drop_recorded_pin($repoRoot);
             unset($state['phase5.recorded_pin_sha']);
-            // Strict pre-extract clear of any non-real-directory entry at
-            // the plugin path. Re-stats first (TOCTOU defense — the
-            // earlier pluginIsLink/RealDir snapshot was taken before the
-            // fetch/SHA/zip-open window) and aborts if an @unlink fails
-            // silently. extractTo would otherwise write through a
-            // surviving symlink to outside the checkout.
+            // TOCTOU defense: re-stat the plugin path and bail if its
+            // shape changed since the initial scan. The ownership prompt
+            // above (or --force) authorized modification of *what was
+            // there then* — fetch + SHA verify + zip open is a wide
+            // enough window for another process or the user themselves
+            // to create or swap in an entry. Without this check, the
+            // strict clear below would delete the new entry under
+            // someone else's consent.
+            $nowIsLink = is_link($pluginDir);
+            $nowIsRealDir = is_dir($pluginDir) && !$nowIsLink;
+            $nowExists = file_exists($pluginDir) || $nowIsLink;
+            if ($nowIsLink !== $pluginIsLink
+                || $nowIsRealDir !== $pluginIsRealDir
+                || $nowExists !== $somethingExists
+            ) {
+                throw new \RuntimeException(
+                    "phase 5: plugin path $pluginDir changed shape during fetch; refusing to overwrite without re-prompt"
+                );
+            }
+            // Strict pre-extract clear of any entry at the plugin path.
+            // Re-stats inside the helper after each removal to defend
+            // against silent @unlink/rrmdir failure (round 10) and
+            // races (round 17). extractTo would otherwise write
+            // through a surviving symlink or fail mid-extract.
             envlite_phase5_clear_plugin_blocker($pluginDir);
             // extractTo returns false on partial/failed extraction (permissions,
             // disk full, malformed entries). Recording the directory as
