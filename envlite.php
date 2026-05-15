@@ -146,6 +146,67 @@ function envlite_manifest_load(string $repoRoot): array {
     return $entries;
 }
 
+/**
+ * Manifest-first managed-file write with rollback on failure.
+ *
+ * Per the spec's manifest-first ordering rule, the manifest is saved
+ * with the new entry *before* `envlite_atomic_write` runs. That
+ * direction gives the safer crash semantics — a partial state of
+ * "manifest claims envlite owns X, X is missing on disk" classifies
+ * as `owned_clean` and the next `up` recreates X without prompting.
+ *
+ * But it has a corner case: if `envlite_atomic_write` itself fails
+ * (disk full, rename denied, destination directory permission
+ * change), the file on disk is whatever it was BEFORE the write —
+ * possibly user-authored content envlite was about to overwrite —
+ * and the manifest now claims envlite's content-hash for that
+ * user file. A subsequent `clean --force` would then delete the
+ * user-authored file as envlite-owned, and a subsequent `up` would
+ * see "hash drift" rather than "user-owned" and use a misleading
+ * prompt.
+ *
+ * Rollback: on failure, restore the prior manifest entry (or delete
+ * it if there was none), save the manifest again, and re-raise the
+ * original exception. The rollback `save` is best-effort: if it ALSO
+ * fails (the original failure was disk-full and the manifest write
+ * shares the same cache directory), the manifest stays mutated, but
+ * the original phase exception is still propagated — better than
+ * losing the original failure to a chained catch.
+ *
+ * @param array<string,string> $manifest By-reference for the caller's
+ *                                       observable view. Updated to
+ *                                       the new state on success, or
+ *                                       to the rolled-back state on
+ *                                       failure.
+ */
+function envlite_write_managed_file(
+    string $repoRoot,
+    array &$manifest,
+    string $relPath,
+    string $bytes,
+    string $absPath
+): void {
+    $priorEntry = $manifest[$relPath] ?? null;
+    $manifest[$relPath] = hash('sha256', $bytes);
+    envlite_manifest_save($repoRoot, $manifest);
+    try {
+        envlite_atomic_write($absPath, $bytes);
+    } catch (\Throwable $e) {
+        if ($priorEntry === null) {
+            unset($manifest[$relPath]);
+        } else {
+            $manifest[$relPath] = $priorEntry;
+        }
+        try {
+            envlite_manifest_save($repoRoot, $manifest);
+        } catch (\Throwable $_) {
+            // Swallow the rollback's failure — the original exception
+            // is the more useful diagnostic for the user.
+        }
+        throw $e;
+    }
+}
+
 function envlite_manifest_save(string $repoRoot, array $entries): void {
     $lines = '';
     foreach ($entries as $path => $hash) {
@@ -868,20 +929,13 @@ function envlite_phase1_discover_port(string $repoRoot, ?int $explicitPort): int
 
 function envlite_phase1_write_cache(string $repoRoot, int $port): void {
     $cachePath = rtrim(envlite_path_to_posix($repoRoot), '/') . '/.cache/envlite/port';
-    // Save manifest BEFORE the atomic_write (manifest-first ordering;
-    // see envlite_phase5_install for the failure-mode rationale). If
-    // anything goes wrong between manifest_save and atomic_write, the
-    // manifest claims envlite owns the port file but the file is
-    // missing on disk — envlite_ownership classifies that as
-    // 'owned_clean' so the next `up` recreates it without prompting.
-    // The inverse ordering (write first) would leave the port file on
-    // disk unrecorded; the next `clean` would orphan it and the next
-    // `up` would prompt as if it were user-authored.
+    // Manifest-first write with rollback on failure. See
+    // envlite_write_managed_file for the contract and failure modes.
     $manifest = envlite_manifest_load($repoRoot);
     $bytes = "$port\n";
-    $manifest['.cache/envlite/port'] = hash('sha256', $bytes);
-    envlite_manifest_save($repoRoot, $manifest);
-    envlite_atomic_write($cachePath, $bytes);
+    envlite_write_managed_file(
+        $repoRoot, $manifest, '.cache/envlite/port', $bytes, $cachePath
+    );
 }
 
 function envlite_phase2_input_hash(string $repoRoot): ?string {
@@ -1508,6 +1562,20 @@ function envlite_phase5_apply_extract(
     // through. The spec is explicit that the containment check runs
     // "immediately before extractTo".
     envlite_phase5_assert_parent_inside_repo($repoRoot, $parentDir);
+    // Re-check the parent IDENTITY too (not just containment): a swap
+    // between the round-21 identity check and now would leave the
+    // parent at a different inode, possibly still inside the checkout
+    // — containment passes, but the parent we approved is gone. The
+    // initial parent signature recorded at scan time is the
+    // ground-truth identity the user (or --force) authorized; if it
+    // changed, refuse to extract regardless of where the new parent
+    // points.
+    $postClearParentSignature = envlite_phase5_path_signature($parentDir);
+    if ($postClearParentSignature !== $initialParentSignature) {
+        throw new \RuntimeException(
+            "phase 5: plugin parent $parentDir changed identity after clear; refusing to extract"
+        );
+    }
     // Re-stat the plugin path itself too — the clear pass should have
     // left it empty (signature null), but a race could have recreated
     // a symlink at that path between the clear and now. extractTo
@@ -1734,18 +1802,9 @@ function envlite_phase5_install(
     } elseif ($ownership === 'unowned') {
         envlite_prompt_or_abort($force, 'up', 'overwrite unowned file', $dbPhpRel, null, null);
     }
-    // Order: record ownership FIRST, then write the file. If a crash
-    // interrupts between these two writes, the failure mode is "manifest
-    // claims envlite owns X, X is missing on disk" — envlite_ownership
-    // returns 'owned_clean' for that combination, so the next `up` safely
-    // recreates the file without prompting. Reversing the order (write
-    // first, then record) leaves the inverse failure mode where the file
-    // exists but the manifest has no entry, and the next `clean` orphans
-    // it while the next `up` treats it as user-owned and prompts.
-    $hash = hash('sha256', $dbBytes);
-    $manifest[$dbPhpRel] = $hash;
-    envlite_manifest_save($repoRoot, $manifest);
-    envlite_atomic_write($dbPhpAbs, $dbBytes);
+    // Manifest-first write with rollback on failure. See
+    // envlite_write_managed_file for the failure-mode rationale.
+    envlite_write_managed_file($repoRoot, $manifest, $dbPhpRel, $dbBytes, $dbPhpAbs);
 
     // Step 6: tripwire.
     envlite_phase5_assert_placeholder($dbCopy);
@@ -1826,11 +1885,8 @@ function envlite_phase6_install(string $repoRoot, bool $force): void {
     } elseif ($ownership === 'unowned') {
         envlite_prompt_or_abort($force, 'up', 'overwrite unowned file', $outRel, null, null);
     }
-    // Save manifest first; see envlite_phase5_install for the rationale.
-    $hash = hash('sha256', $rendered);
-    $manifest[$outRel] = $hash;
-    envlite_manifest_save($repoRoot, $manifest);
-    envlite_atomic_write($outAbs, $rendered);
+    // Manifest-first write with rollback on failure.
+    envlite_write_managed_file($repoRoot, $manifest, $outRel, $rendered, $outAbs);
 }
 
 const ENVLITE_SALT_URL = 'https://api.wordpress.org/secret-key/1.1/salt/';
@@ -1941,11 +1997,8 @@ function envlite_phase7_install(string $repoRoot, int $port, bool $force): void 
     } elseif ($ownership === 'unowned') {
         envlite_prompt_or_abort($force, 'up', 'overwrite unowned file', $outRel, null, null);
     }
-    // Save manifest first; see envlite_phase5_install for the rationale.
-    $hash = hash('sha256', $rendered);
-    $manifest[$outRel] = $hash;
-    envlite_manifest_save($repoRoot, $manifest);
-    envlite_atomic_write($outAbs, $rendered);
+    // Manifest-first write with rollback on failure.
+    envlite_write_managed_file($repoRoot, $manifest, $outRel, $rendered, $outAbs);
 }
 
 /**

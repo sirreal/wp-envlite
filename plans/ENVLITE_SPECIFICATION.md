@@ -1304,20 +1304,39 @@ pre-existing user file or symlink at the temp path collide with
 envlite's write — `wb` would have truncated it (or followed the
 symlink to truncate its target) before ownership could be evaluated.
 
-**Manifest-first ordering.** Callers writing a managed file MUST
-update and `envlite_manifest_save` the manifest *before* invoking
-`envlite_atomic_write` for the content. The hash is computed up
-front from the in-memory bytes so the manifest already has the
-correct SHA at save time. The failure mode under crash-or-interrupt
-between the two steps is then "manifest claims envlite owns X but X
-is missing on disk", which `envlite_ownership` classifies as
-`owned_clean` — the next `up` recreates the file silently. Reversed
-ordering (atomic_write first, manifest_save second) leaves the
-inverse failure: file on disk with no manifest record. `clean` then
-orphans the file, and the next `up` treats it as user-authored and
-prompts before overwriting — both contrary to the spec's
-ownership/atomic-write contract. All Phase 5/6/7 callers and the
-internal Phase 1 port-cache writer use the manifest-first order.
+**Manifest-first ordering with rollback.** Callers writing a managed
+file MUST update and `envlite_manifest_save` the manifest *before*
+invoking `envlite_atomic_write` for the content. The hash is computed
+up front from the in-memory bytes so the manifest already has the
+correct SHA at save time.
+
+The failure mode under crash-or-interrupt between the two steps is
+"manifest claims envlite owns X but X is missing on disk", which
+`envlite_ownership` classifies as `owned_clean` — the next `up`
+recreates the file silently. Reversed ordering (atomic_write first,
+manifest_save second) leaves the inverse failure: file on disk with
+no manifest record, which `clean` orphans and `up` treats as
+user-authored. Both contrary to the spec's
+ownership/atomic-write contract.
+
+A second failure mode exists when atomic_write itself fails (full
+disk, rename denied, destination directory permission change): the
+on-disk file is whatever it was BEFORE the write — possibly
+user-authored content envlite was about to overwrite — and the
+manifest now claims envlite's hash for that user file. A later
+`clean --force` would then delete the user's file as envlite-owned.
+Callers therefore route through the
+`envlite_write_managed_file($repoRoot, $manifest, $relPath, $bytes,
+$absPath)` helper, which performs the manifest-first save and, on
+atomic_write failure, rolls the manifest entry back to its prior
+state (delete if it was new; restore if it was overwriting) and
+re-saves before re-raising. The rollback save is best-effort: if it
+ALSO fails (e.g. the underlying failure was disk-full), the
+original exception still propagates and the user gets a useful
+phase-N diagnostic.
+
+All Phase 5/6/7 callers and the internal Phase 1 port-cache writer
+go through this helper.
 
 Before the `rename()`, atomic_write clears a non-regular destination
 (symlinks via `unlink`, directories via the symlink-aware `rrmdir`).
