@@ -113,6 +113,55 @@ function test_phase3_head_sha_returns_null_when_ref_unresolvable() {
     envlite_assert_eq(null, envlite_phase3_head_sha($dir));
 }
 
+function test_phase3_head_sha_resolves_linked_worktree() {
+    // Round 23 regression: in a git linked worktree (`git worktree add`),
+    // `.git` is a FILE containing `gitdir: <path>` not a directory.
+    // Round-22's helper read `$repoRoot/.git/HEAD` and failed there,
+    // returning null and letting Phase 3 skip across branch switches
+    // in worktrees. The fix resolves the per-worktree gitdir from the
+    // gitdir: pointer file.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $base = envlite_test_tmpdir('phase3-worktree-base');
+    // Main repo: $base/main/.git/ with a worktrees/ child.
+    mkdir("$base/main/.git/worktrees/feature/refs/heads", 0755, true);
+    mkdir("$base/main/.git/refs/heads", 0755, true);
+    // Worktree: $base/wt/.git (file) → main/.git/worktrees/feature
+    mkdir("$base/wt", 0755, true);
+    file_put_contents("$base/wt/.git", "gitdir: $base/main/.git/worktrees/feature\n");
+    // Worktree's HEAD points at refs/heads/feature; per-tree.
+    file_put_contents("$base/main/.git/worktrees/feature/HEAD", "ref: refs/heads/feature\n");
+    // commondir: points back at the main .git.
+    file_put_contents("$base/main/.git/worktrees/feature/commondir", "../..\n");
+    // Loose ref for the feature branch lives in the common .git/refs.
+    $sha = str_repeat('f', 40);
+    file_put_contents("$base/main/.git/refs/heads/feature", "$sha\n");
+
+    envlite_assert_eq($sha, envlite_phase3_head_sha("$base/wt"),
+        'helper must resolve HEAD through the worktree gitdir pointer');
+}
+
+function test_phase3_resolve_git_dir_plain_checkout() {
+    $dir = envlite_test_tmpdir('phase3-resolve-plain');
+    mkdir("$dir/.git", 0755, true);
+    envlite_assert_eq("$dir/.git", envlite_phase3_resolve_git_dir($dir));
+}
+
+function test_phase3_resolve_git_dir_returns_null_outside_repo() {
+    $dir = envlite_test_tmpdir('phase3-resolve-none');
+    envlite_assert_eq(null, envlite_phase3_resolve_git_dir($dir));
+}
+
+function test_phase3_resolve_git_dir_linked_worktree_relative_target() {
+    // `gitdir:` value can be relative — resolved against the worktree
+    // root (the directory containing the `.git` pointer file).
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_tmpdir('phase3-resolve-relative');
+    mkdir("$dir/external/main/.git/worktrees/wt", 0755, true);
+    file_put_contents("$dir/.git", "gitdir: external/main/.git/worktrees/wt\n");
+    $resolved = envlite_phase3_resolve_git_dir($dir);
+    envlite_assert_eq("$dir/external/main/.git/worktrees/wt", $resolved);
+}
+
 function test_skip_rule_phase3_head_sha_changed_means_run() {
     // Round 22 regression: phases 2 and 4 skipped (lockfiles unchanged)
     // but the user ran `git pull` so HEAD moved. Without the head_sha

@@ -1091,7 +1091,19 @@ function envlite_phase24_parallel(string $repoRoot, bool $rebuild): array {
  * user's responsibility (use `--rebuild`).
  */
 function envlite_phase3_head_sha(string $repoRoot): ?string {
-    $head = @file_get_contents($repoRoot . '/.git/HEAD');
+    // Resolve the per-worktree git directory. In a plain checkout this
+    // is `$repoRoot/.git/`; in a linked worktree (`git worktree add ...`)
+    // `$repoRoot/.git` is a regular file containing `gitdir: <path>`
+    // where the worktree's per-tree HEAD/refs live (the object store and
+    // packed-refs still belong to the main repo, but HEAD is local). The
+    // round-22 implementation read `$repoRoot/.git/HEAD` directly and
+    // returned null on a linked worktree, which the skip rule then
+    // mapped to `null === null` and let Phase 3 skip across branch
+    // switches there — exactly the regression this helper was added to
+    // prevent.
+    $gitDir = envlite_phase3_resolve_git_dir($repoRoot);
+    if ($gitDir === null) { return null; }
+    $head = @file_get_contents($gitDir . '/HEAD');
     if ($head === false) { return null; }
     $head = trim($head);
     if (preg_match('/^[0-9a-f]{40}$/', $head)) {
@@ -1099,23 +1111,81 @@ function envlite_phase3_head_sha(string $repoRoot): ?string {
     }
     if (strpos($head, 'ref: ') !== 0) { return null; }
     $ref = trim(substr($head, 5));
-    // Loose ref first.
-    $refFile = $repoRoot . '/.git/' . $ref;
-    if (is_file($refFile)) {
-        $sha = trim(@file_get_contents($refFile) ?: '');
-        if (preg_match('/^[0-9a-f]{40}$/', $sha)) { return $sha; }
+    // Loose ref first — refs/heads/<branch> lives under the WORKTREE
+    // gitDir for a linked worktree (per-tree HEAD), but other refs
+    // (tags, remote-tracking) live under the COMMON gitdir. Try the
+    // worktree dir first, then walk up to the common dir if needed.
+    $commonDir = envlite_phase3_resolve_git_common_dir($gitDir);
+    foreach (array_unique([$gitDir, $commonDir]) as $dir) {
+        if ($dir === null) { continue; }
+        $refFile = $dir . '/' . $ref;
+        if (is_file($refFile)) {
+            $sha = trim(@file_get_contents($refFile) ?: '');
+            if (preg_match('/^[0-9a-f]{40}$/', $sha)) { return $sha; }
+        }
     }
-    // Fallback: packed-refs.
-    $packed = @file_get_contents($repoRoot . '/.git/packed-refs');
-    if ($packed === false) { return null; }
-    foreach (explode("\n", $packed) as $line) {
-        $line = rtrim($line, "\r");
-        if ($line === '' || $line[0] === '#' || $line[0] === '^') { continue; }
-        if (preg_match('/^([0-9a-f]{40}) (.+)$/', $line, $m) && $m[2] === $ref) {
-            return $m[1];
+    // Fallback: packed-refs lives only in the common gitdir.
+    if ($commonDir !== null) {
+        $packed = @file_get_contents($commonDir . '/packed-refs');
+        if ($packed !== false) {
+            foreach (explode("\n", $packed) as $line) {
+                $line = rtrim($line, "\r");
+                if ($line === '' || $line[0] === '#' || $line[0] === '^') { continue; }
+                if (preg_match('/^([0-9a-f]{40}) (.+)$/', $line, $m) && $m[2] === $ref) {
+                    return $m[1];
+                }
+            }
         }
     }
     return null;
+}
+
+/**
+ * Return the absolute path to the per-worktree git directory for a
+ * checkout at $repoRoot, or null when the checkout isn't a git tree.
+ *   - plain checkout:     `$repoRoot/.git/` (directory)
+ *   - linked worktree:    `$repoRoot/.git` is a file
+ *                          `gitdir: /path/to/main/.git/worktrees/<name>`
+ *                          — return that target.
+ */
+function envlite_phase3_resolve_git_dir(string $repoRoot): ?string {
+    $dotGit = $repoRoot . '/.git';
+    if (is_dir($dotGit) && !is_link($dotGit)) { return $dotGit; }
+    if (is_file($dotGit)) {
+        $contents = @file_get_contents($dotGit);
+        if ($contents === false) { return null; }
+        if (preg_match('/^gitdir:\s*(.+)$/m', $contents, $m)) {
+            $target = trim($m[1]);
+            // Relative paths in `gitdir:` are resolved against the
+            // location of the `.git` file (the worktree root).
+            if ($target !== '' && $target[0] !== '/' && !preg_match('/^[A-Za-z]:/', $target)) {
+                $target = $repoRoot . '/' . $target;
+            }
+            return rtrim($target, '/\\');
+        }
+    }
+    return null;
+}
+
+/**
+ * Resolve the *common* git directory (the main repo's .git) given a
+ * per-worktree git dir. For a plain checkout this is the same path;
+ * for a linked worktree it's read from `commondir` (a file inside the
+ * worktree's gitdir containing the path to the main .git, absolute or
+ * relative to the worktree gitdir).
+ */
+function envlite_phase3_resolve_git_common_dir(string $gitDir): ?string {
+    $commonFile = $gitDir . '/commondir';
+    if (!is_file($commonFile)) {
+        // Plain checkout: the common dir IS the per-worktree dir.
+        return $gitDir;
+    }
+    $target = trim(@file_get_contents($commonFile) ?: '');
+    if ($target === '') { return null; }
+    if ($target[0] !== '/' && !preg_match('/^[A-Za-z]:/', $target)) {
+        $target = $gitDir . '/' . $target;
+    }
+    return rtrim($target, '/\\');
 }
 
 function envlite_phase3_build_dev(
