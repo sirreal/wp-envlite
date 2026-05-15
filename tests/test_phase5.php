@@ -417,7 +417,7 @@ function test_phase5_stage_temp_zip_throws_phase_5_on_unwritable_dir() {
     // throws a misleading "SHA256 mismatch" — burying the real cause.
     // The helper checks the write return and surfaces a phase-5-prefixed
     // diagnostic that names the temp-zip write failure.
-    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) {
+    if (envlite_test_should_skip_perm_bits()) {
         return; // chmod 0500 doesn't bind root; Windows differs
     }
     $ro = envlite_test_tmpdir('phase5-stage-ro');
@@ -562,7 +562,7 @@ function test_phase5_clear_plugin_blocker_unlinks_regular_file() {
 function test_phase5_clear_plugin_blocker_throws_when_symlink_cannot_be_removed() {
     // Force @unlink to fail by chmod'ing the parent directory to read-only.
     // POSIX-only; root bypasses permission bits.
-    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) { return; }
+    if (envlite_test_should_skip_perm_bits()) { return; }
     $dir = envlite_test_tmpdir('phase5-blocker-readonly');
     $plugin = "$dir/sqlite-database-integration";
     $target = envlite_test_tmpdir('phase5-blocker-readonly-target');

@@ -68,7 +68,7 @@ function test_phase1_discover_port_throws_on_unwritable_cache_dir() {
     // RuntimeException. The up-command call site must wrap this in
     // envlite_phase_guard so the exception surfaces as the documented
     // `envlite up: phase 1: ...` error rather than escaping uncaught.
-    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) {
+    if (envlite_test_should_skip_perm_bits()) {
         // Same gating as test_clean_apply_reports_paths_that_remain_after_failed_deletion:
         // root bypasses permission bits, and Windows file semantics differ.
         return;
@@ -96,7 +96,7 @@ function test_phase_guard_catches_phase1_throw_returns_one() {
     // call in envlite_phase_guard. The guard must catch the
     // RuntimeException, label it as phase 1, and return 1 — rather than
     // letting the throw escape envlite_cmd_up as an uncaught PHP error.
-    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) { return; }
+    if (envlite_test_should_skip_perm_bits()) { return; }
     $dir = envlite_test_tmpdir('phase1-guard');
     mkdir("$dir/.cache", 0555);
     try {
@@ -183,7 +183,7 @@ function test_phase1_does_not_write_port_cache_when_manifest_unreadable() {
     // been written, and the manifest never got the entry. State
     // mutated without recording, violating the bind-failure-contract
     // spirit (no manifest mutation on failure).
-    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) { return; }
+    if (envlite_test_should_skip_perm_bits()) { return; }
     $dir = envlite_test_tmpdir('phase1-manifest-unreadable');
     mkdir("$dir/.cache/envlite", 0755, true);
     // Pre-create the manifest with content envlite would consider valid,

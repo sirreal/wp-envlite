@@ -107,7 +107,7 @@ function test_observe_ht_sqlite_persist_throws_on_unwritable_cache_dir() {
     // The up call site catches this throw and turns it into the documented
     // `envlite up: ...` line + exit 1; this test pins the throw shape so a
     // refactor of atomic_write does not regress that contract silently.
-    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) { return; }
+    if (envlite_test_should_skip_perm_bits()) { return; }
     $dir = envlite_test_tmpdir('observe-persist-readonly');
     mkdir("$dir/.cache/envlite", 0755, true);
     mkdir("$dir/src/wp-content/database", 0755, true);
@@ -350,6 +350,44 @@ function test_clean_apply_state_exception_only_applies_to_state_entries() {
         'inner directory reachable only via the non-state ancestor symlink must also survive');
 }
 
+function test_clean_apply_refuses_dangling_symlink_through_escaped_ancestor() {
+    // Round 31 P2 regression: the round-24 containment skip for
+    // broken-symlink leaves missed the case where an ANCESTOR is
+    // itself a symlink to outside the checkout. @unlink of the
+    // dangling-symlink leaf then resolves through the ancestor and
+    // removes a symlink in an external location. The fix walks the
+    // parent's realpath and applies containment to it.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $repo = envlite_test_tmpdir('clean-dangling-via-escape');
+    // External target the ancestor points at. A dangling symlink
+    // lives inside it; clean_apply must NOT unlink it.
+    $external = envlite_test_tmpdir('clean-dangling-via-escape-target');
+    symlink("$external/never-existed", "$external/dangling");
+    envlite_assert(is_link("$external/dangling"));
+    envlite_assert(!file_exists("$external/dangling"));
+
+    // Ancestor inside the checkout symlinked to $external.
+    mkdir("$repo/src/wp-content", 0755, true);
+    symlink($external, "$repo/src/wp-content/plugins");
+
+    // Manifest entry whose joined path is
+    // $repo/src/wp-content/plugins/dangling — resolves via the
+    // ancestor symlink to $external/dangling, which is itself a
+    // broken symlink. Round-24's "broken symlink fast-path" would
+    // have @unlink'd it, removing the user's external dangling
+    // symlink.
+    $manifest = ['src/wp-content/plugins/dangling' => 'dir'];
+    $failed = envlite_clean_apply($repo, envlite_clean_collect($manifest));
+
+    envlite_assert_eq(
+        ['src/wp-content/plugins/dangling'],
+        $failed,
+        'clean_apply must refuse broken-symlink leaves whose parent escapes'
+    );
+    envlite_assert(is_link("$external/dangling"),
+        'external broken symlink must NOT be unlinked by clean_apply');
+}
+
 function test_clean_apply_refuses_when_ancestor_is_symlink_to_outside() {
     // Round 24 P1 regression: rrmdir's top-level is_link guard only
     // protects the leaf component. When a manifest entry's PARENT (or
@@ -451,7 +489,7 @@ function test_clean_apply_removes_broken_symlink_manifest_entries() {
 }
 
 function test_clean_apply_reports_paths_that_remain_after_failed_deletion() {
-    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) {
+    if (envlite_test_should_skip_perm_bits()) {
         // Root can delete read-only-parent files; this test needs a
         // non-root POSIX environment. On Windows, file-locking behavior
         // differs and is tested separately.

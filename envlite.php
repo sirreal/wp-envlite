@@ -2471,9 +2471,26 @@ function envlite_clean_apply(string $repoRoot, array $paths): array {
         // no resolved path; for those, fall back to using the literal
         // join (the leaf is the symlink itself, which we unlink — no
         // recursion possible).
-        $canonicalAbs = is_link($abs) && !file_exists($abs)
-            ? null  // broken symlink, unlinkable directly
-            : @realpath($abs);
+        // Broken (dangling) symlink at the leaf: realpath returns false.
+        // Earlier rounds skipped containment for this case on the
+        // assumption that an `@unlink` of a symlink is a single-inode
+        // operation. But the unlink still resolves through the PARENT
+        // path — and if an ancestor of $abs is a symlink to outside
+        // the checkout, the unlink operates on a symlink in that
+        // external location. Check the parent's canonical resolution
+        // and use that for containment when the leaf itself has no
+        // realpath.
+        $isBrokenSymlink = is_link($abs) && !file_exists($abs);
+        if ($isBrokenSymlink) {
+            $canonicalAbs = @realpath(dirname($abs));
+            if ($canonicalAbs !== false) {
+                // Append the symlink's basename so the prefix check
+                // operates on a path inside the resolved parent.
+                $canonicalAbs = rtrim($canonicalAbs, '/\\') . '/' . basename($abs);
+            }
+        } else {
+            $canonicalAbs = @realpath($abs);
+        }
         if ($canonicalAbs !== null && $canonicalAbs !== false) {
             $canonicalAbsNorm = envlite_path_to_forward_slashes($canonicalAbs);
             $insideRepo = strpos($canonicalAbsNorm . '/', $rootPrefix) === 0;

@@ -82,7 +82,7 @@ function test_manifest_load_throws_when_state_dir_unreadable() {
     // making `clean --force` silently wipe `.cache/envlite/` along with
     // the inaccessible manifest, orphaning every previously managed
     // file. The fix probes the parent and throws on inaccessibility.
-    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) { return; }
+    if (envlite_test_should_skip_perm_bits()) { return; }
     $dir = envlite_test_tmpdir('manifest-state-unreadable');
     mkdir("$dir/.cache/envlite", 0755, true);
     file_put_contents("$dir/.cache/envlite/manifest",
@@ -114,7 +114,7 @@ function test_manifest_load_throws_when_file_exists_but_unreadable() {
     // following up rewrote the manifest with only the new entries,
     // losing the historical ownership records. The fix throws a
     // RuntimeException — callers can choose to abort or guard it.
-    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) { return; }
+    if (envlite_test_should_skip_perm_bits()) { return; }
     $dir = envlite_test_tmpdir('manifest-unreadable');
     mkdir("$dir/.cache/envlite", 0755, true);
     file_put_contents("$dir/.cache/envlite/manifest", str_repeat('a', 64) . "  some/path\n");
