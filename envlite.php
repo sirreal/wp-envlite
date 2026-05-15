@@ -1156,6 +1156,27 @@ function envlite_phase5_stage_temp_zip(string $tmpDir, string $bytes): string {
 }
 
 /**
+ * Capture a stable identity for the Phase 5 plugin path so a
+ * before/after comparison can detect any change — including a
+ * same-shape swap (e.g. one real directory replaced by another).
+ * Returns null when nothing exists at the path; otherwise a string
+ * derived from `lstat`'s inode + device numbers, which uniquely
+ * identify a filesystem object on POSIX. On Windows NTFS lstat
+ * exposes a usable file index; FAT-shaped filesystems may report
+ * zero/duplicate inodes, which is an acceptable degradation for a
+ * local-dev-only attack vector.
+ *
+ * @return string|null `<ino>:<dev>` for an existing entry, `null` if absent
+ */
+function envlite_phase5_path_signature(string $path): ?string {
+    $stat = @lstat($path);
+    if ($stat === false || !is_array($stat)) { return null; }
+    $ino = $stat['ino'] ?? $stat[1] ?? 0;
+    $dev = $stat['dev'] ?? $stat[0] ?? 0;
+    return $ino . ':' . $dev;
+}
+
+/**
  * Strict pre-extract cleanup for the Phase 5 plugin path. The caller
  * holds the user's consent (prompt approved or --force); this function
  * makes sure the path is **empty** before extractTo runs:
@@ -1249,6 +1270,9 @@ function envlite_phase5_install(
     // external modification and must not satisfy the skip predicate.
     $pluginIsLink = is_link($pluginDir);
     $pluginIsRealDir = is_dir($pluginDir) && !$pluginIsLink;
+    // Capture a stable identity for the TOCTOU re-check before the
+    // clear pass (see comment around the re-stat assertion below).
+    $initialSignature = envlite_phase5_path_signature($pluginDir);
     $pinMatches = ($state['phase5.recorded_pin_sha'] ?? null) === ENVLITE_SQLITE_PLUGIN_SHA256;
     $alreadyInstalled = !$rebuild
         && $pluginIsRealDir
@@ -1286,23 +1310,20 @@ function envlite_phase5_install(
             // download), forcing every subsequent `up` to re-fetch.
             envlite_phase5_drop_recorded_pin($repoRoot);
             unset($state['phase5.recorded_pin_sha']);
-            // TOCTOU defense: re-stat the plugin path and bail if its
-            // shape changed since the initial scan. The ownership prompt
-            // above (or --force) authorized modification of *what was
-            // there then* — fetch + SHA verify + zip open is a wide
-            // enough window for another process or the user themselves
-            // to create or swap in an entry. Without this check, the
-            // strict clear below would delete the new entry under
-            // someone else's consent.
-            $nowIsLink = is_link($pluginDir);
-            $nowIsRealDir = is_dir($pluginDir) && !$nowIsLink;
-            $nowExists = file_exists($pluginDir) || $nowIsLink;
-            if ($nowIsLink !== $pluginIsLink
-                || $nowIsRealDir !== $pluginIsRealDir
-                || $nowExists !== $somethingExists
-            ) {
+            // TOCTOU defense: re-check the plugin path identity and bail
+            // if it has changed since the initial scan. The ownership
+            // prompt above (or --force) authorized modification of
+            // *the specific entry that existed then* — fetch + SHA
+            // verify + zip open is a wide enough window for another
+            // process or the user themselves to create, remove, or
+            // swap the entry. Identity comparison uses inode + device
+            // (see envlite_phase5_path_signature), so a same-shape
+            // swap (real-dir A replaced by real-dir B) is detected
+            // too — boolean shape flags alone would miss that case.
+            $currentSignature = envlite_phase5_path_signature($pluginDir);
+            if ($currentSignature !== $initialSignature) {
                 throw new \RuntimeException(
-                    "phase 5: plugin path $pluginDir changed shape during fetch; refusing to overwrite without re-prompt"
+                    "phase 5: plugin path $pluginDir changed identity during fetch; refusing to overwrite without re-prompt"
                 );
             }
             // Strict pre-extract clear of any entry at the plugin path.

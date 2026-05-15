@@ -747,15 +747,19 @@ before being overwritten; `--force` answers yes to every such prompt.
    extraction succeeds — subsequent `up` runs compare against this
    to detect a code-level pin bump.
 
-   Immediately before invoking `ZipArchive::extractTo`, re-stat the
-   plugin path. The ownership prompt fired against the *initial*
-   scan; the HTTP fetch + SHA verify + zip open window is several
-   seconds wide and another process (or the user themselves) can
-   create or swap in a new entry at the path during it. If the shape
-   has changed (presence flipped, symlink↔real-dir flip), abort with
-   a phase 5 diagnostic — the clear pass below would otherwise
-   delete the new entry under consent that was given for something
-   else.
+   Immediately before invoking `ZipArchive::extractTo`, re-check the
+   plugin path **identity** (not just shape). The ownership prompt
+   fired against the *specific entry* present at the initial scan;
+   the HTTP fetch + SHA verify + zip open window is several seconds
+   wide and another process (or the user themselves) can create,
+   remove, or **swap** the entry. The check uses an `lstat`-derived
+   `<ino>:<dev>` signature so a same-shape swap (a real directory
+   replaced by a different real directory; one symlink replaced by
+   another) is caught — boolean checks alone (`is_link`,
+   `is_dir`, `file_exists`) would miss the same-shape case. If the
+   signature has changed, abort with a phase 5 diagnostic. The
+   clear pass below would otherwise delete the new entry under
+   consent that was given for something else.
 
    Then **clear the plugin path entirely**. Symlinks (any flavor)
    and non-directory entries (regular file, FIFO, socket) are

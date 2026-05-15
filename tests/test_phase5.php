@@ -27,6 +27,77 @@ function test_phase5_tripwire_passes_when_placeholder_present() {
     envlite_phase5_assert_placeholder($dir . '/db.copy'); // must not throw
 }
 
+function test_phase5_path_signature_null_for_missing_path() {
+    $dir = envlite_test_tmpdir('phase5-sig-missing');
+    envlite_assert_eq(null, envlite_phase5_path_signature("$dir/no-such-entry"));
+}
+
+function test_phase5_path_signature_distinct_for_distinct_entries() {
+    // Round 18 P2 regression: round-17's pre-clear check compared only
+    // booleans (is_link / is_real_dir / exists). A same-shape swap
+    // (real-dir A replaced by real-dir B) kept the booleans constant
+    // and passed the guard, so the clear would delete the replacement
+    // under stale consent. The fix uses lstat ino+dev — exercise that
+    // a fresh directory at the same path produces a different
+    // signature than the original.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_tmpdir('phase5-sig-swap');
+    $p = "$dir/plugin-path";
+    mkdir($p);
+    $beforeSig = envlite_phase5_path_signature($p);
+    envlite_assert($beforeSig !== null, 'signature must be non-null for an existing dir');
+
+    // Replace the directory with a fresh one (rrmdir + mkdir = new inode
+    // on POSIX). Same shape (still a real directory), different identity.
+    envlite_rrmdir($p);
+    mkdir($p);
+    $afterSig = envlite_phase5_path_signature($p);
+    envlite_assert($afterSig !== null);
+    envlite_assert($beforeSig !== $afterSig,
+        'same-shape swap must produce a different signature; before=' . $beforeSig . ' after=' . $afterSig);
+}
+
+function test_phase5_path_signature_stable_across_same_inode() {
+    // Inverse: the SAME on-disk entry must produce the SAME signature
+    // across calls. Otherwise the TOCTOU guard would false-positive
+    // and abort on every fetch even when nothing changed.
+    $dir = envlite_test_tmpdir('phase5-sig-stable');
+    $p = "$dir/plugin-path";
+    mkdir($p);
+    file_put_contents("$p/inner", 'content');
+    envlite_assert_eq(
+        envlite_phase5_path_signature($p),
+        envlite_phase5_path_signature($p),
+        'signature must be stable for the same on-disk entry'
+    );
+    // Even after modifying inner contents (mtime changes, but the
+    // directory's inode stays the same), the signature must match.
+    file_put_contents("$p/inner", 'different content');
+    file_put_contents("$p/another", 'new file');
+    envlite_assert(
+        envlite_phase5_path_signature($p) === envlite_phase5_path_signature($p),
+        'signature must remain stable when inner contents change (inode unchanged)'
+    );
+}
+
+function test_phase5_path_signature_changes_when_dir_replaced_by_symlink() {
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $dir = envlite_test_tmpdir('phase5-sig-shape-swap');
+    $p = "$dir/plugin-path";
+    mkdir($p);
+    $beforeSig = envlite_phase5_path_signature($p);
+
+    // Replace the dir with a symlink (shape change AND identity change).
+    rmdir($p);
+    $target = envlite_test_tmpdir('phase5-sig-shape-swap-target');
+    symlink($target, $p);
+    $afterSig = envlite_phase5_path_signature($p);
+
+    envlite_assert($beforeSig !== null && $afterSig !== null);
+    envlite_assert($beforeSig !== $afterSig,
+        'shape-change swap must change signature');
+}
+
 function test_phase5_drop_recorded_pin_removes_pin_from_state() {
     // Set up a state file with the pin and an unrelated key; verify the
     // helper removes only the pin and leaves the rest intact. This is the
