@@ -220,6 +220,61 @@ function test_phase5_apply_extract_throws_when_parent_swapped_to_symlink() {
     }
 }
 
+function test_phase5_install_refuses_cached_skip_through_ancestor_symlink() {
+    // Round 26 P2 regression: the round-25 ancestor-symlink check lived
+    // inside envlite_phase5_apply_extract — which the cached-install
+    // skip path doesn't call. With manifest + pin + db.copy all
+    // satisfying the skip predicate, envlite would proceed to read
+    // $dbCopy through an ancestor symlink and stamp db.php in the
+    // user's repo from external content, no containment check.
+    // The fix runs envlite_phase5_assert_parent_inside_repo BEFORE
+    // the alreadyInstalled predicate too.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $repo = envlite_test_tmpdir('phase5-cached-skip-escape');
+    // External tree that pretends to be an already-installed plugin —
+    // it satisfies the cached-skip predicates (manifest + db.copy
+    // present + pin matching).
+    $external = envlite_test_tmpdir('phase5-cached-skip-escape-target');
+    mkdir("$external/plugins/sqlite-database-integration", 0755, true);
+    file_put_contents("$external/plugins/sqlite-database-integration/db.copy",
+        "<?php // {SQLITE_IMPLEMENTATION_FOLDER_PATH}\n");
+    file_put_contents("$external/precious", 'MUST_SURVIVE');
+
+    // Ancestor `src/wp-content` is a symlink to $external. Phase 5
+    // would otherwise see the plugin dir as "envlite-owned, db.copy
+    // present" via the symlink — and write db.php through it.
+    mkdir("$repo/src", 0755, true);
+    symlink($external, "$repo/src/wp-content");
+    // Pre-seed manifest + state to satisfy the cached-skip predicate.
+    mkdir("$repo/.cache/envlite", 0755, true);
+    envlite_manifest_save($repo, [
+        'src/wp-content/plugins/sqlite-database-integration' => 'dir',
+    ]);
+    envlite_state_save($repo, [
+        'phase5.recorded_pin_sha' => ENVLITE_SQLITE_PLUGIN_SHA256,
+    ]);
+
+    $thrown = null;
+    try {
+        envlite_phase5_install($repo, true, false,
+            static function (): string {
+                throw new \RuntimeException('fetcher should not be reached');
+            });
+    } catch (\RuntimeException $e) {
+        $thrown = $e;
+    }
+    envlite_assert($thrown !== null,
+        'phase5_install must throw when the parent escapes the checkout');
+    envlite_assert(strpos($thrown->getMessage(), 'escapes the checkout') !== false,
+        'error must name the escape; got: ' . $thrown->getMessage());
+
+    // The external target must not be touched: db.php must NOT have been
+    // written into the symlink target, and pre-existing content survives.
+    envlite_assert(!is_file("$external/db.php"),
+        'db.php must NOT have been stamped through the ancestor symlink');
+    envlite_assert_eq('MUST_SURVIVE', file_get_contents("$external/precious"));
+}
+
 function test_phase5_apply_extract_throws_when_ancestor_symlink_escapes_checkout() {
     // Round 25 P2 regression: round-21's parent check used is_link on
     // the IMMEDIATE parent (`src/wp-content/plugins`). If an ANCESTOR

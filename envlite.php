@@ -1385,6 +1385,36 @@ function envlite_phase5_path_signature(string $path): ?string {
 }
 
 /**
+ * Refuse to proceed when the resolved parent directory escapes the
+ * canonical repo root. Same defense as `envlite_clean_apply`'s round-24
+ * containment check, applied to Phase 5's extraction destination AND
+ * to the `db.copy` read in the cached-skip path. Catches ancestor
+ * symlinks (e.g. `src/wp-content` itself swapped to a symlink to
+ * outside the checkout); `is_link($parentDir)` is false in that case
+ * because `$parentDir` is a real directory at the symlink target.
+ *
+ * Throws RuntimeException with the `phase 5:` prefix on:
+ *   - either realpath returning false (path can't be canonicalized)
+ *   - resolved parent path escaping `realpath($repoRoot)`
+ */
+function envlite_phase5_assert_parent_inside_repo(string $repoRoot, string $parentDir): void {
+    $canonicalRoot = @realpath($repoRoot);
+    $canonicalParent = @realpath($parentDir);
+    if ($canonicalRoot === false || $canonicalParent === false) {
+        throw new \RuntimeException(
+            "phase 5: cannot resolve canonical path for $parentDir; refusing to proceed"
+        );
+    }
+    $rootPrefix = rtrim(envlite_path_to_forward_slashes($canonicalRoot), '/') . '/';
+    $parentNorm = envlite_path_to_forward_slashes($canonicalParent);
+    if (strpos($parentNorm . '/', $rootPrefix) !== 0) {
+        throw new \RuntimeException(
+            "phase 5: resolved plugin parent $canonicalParent escapes the checkout; refusing to proceed"
+        );
+    }
+}
+
+/**
  * Run the at-commit-point part of Phase 5: TOCTOU re-check, clear,
  * extract. Separated from envlite_phase5_install so the guard is
  * unit-testable with a caller-supplied ZipArchive instead of having
@@ -1446,33 +1476,20 @@ function envlite_phase5_apply_extract(
             "phase 5: plugin parent $parentDir is not a real directory; refusing to extract"
         );
     }
-    // Ancestor-symlink defense: is_link($parentDir) only protects the
-    // immediate parent. An ancestor higher up (e.g. `src/wp-content`
-    // swapped to a symlink to `/tmp/elsewhere`) leaves the parent
-    // itself as a real directory at the symlink target — is_link is
-    // false on it, the round-21 check passes, and extractTo writes
-    // the plugin tree to wherever the ancestor points. Resolve the
-    // parent through realpath and refuse if it escapes the canonical
-    // repo root. Same defense as envlite_clean_apply for manifest
-    // entries (round 24 P1), applied here to the extract destination.
-    $canonicalRoot = @realpath($repoRoot);
-    $canonicalParent = @realpath($parentDir);
-    if ($canonicalRoot === false || $canonicalParent === false) {
-        throw new \RuntimeException(
-            "phase 5: cannot resolve canonical path for $parentDir; refusing to extract"
-        );
-    }
-    $rootPrefix = rtrim(envlite_path_to_forward_slashes($canonicalRoot), '/') . '/';
-    $parentNorm = envlite_path_to_forward_slashes($canonicalParent);
-    if (strpos($parentNorm . '/', $rootPrefix) !== 0) {
-        throw new \RuntimeException(
-            "phase 5: resolved plugin parent $canonicalParent escapes the checkout; refusing to extract"
-        );
-    }
+    // Ancestor-symlink defense. See envlite_phase5_assert_parent_inside_repo.
+    envlite_phase5_assert_parent_inside_repo($repoRoot, $parentDir);
     // Strict pre-extract clear of any entry at the plugin path. The
     // helper re-stats after each removal to defend against silent
     // @unlink/rrmdir failure and TOCTOU.
     envlite_phase5_clear_plugin_blocker($pluginDir);
+    // Re-run the realpath containment check immediately before
+    // extractTo. The clear pass above creates a small race window
+    // during which an external process could swap an ancestor for a
+    // symlink to outside the checkout; without this second check, the
+    // earlier validation would be stale and the extract would write
+    // through. The spec is explicit that the containment check runs
+    // "immediately before extractTo".
+    envlite_phase5_assert_parent_inside_repo($repoRoot, $parentDir);
     // extractTo returns false on partial/failed extraction. Throwing
     // here means no subsequent state writes (manifest/state) record
     // the broken tree.
@@ -1585,6 +1602,18 @@ function envlite_phase5_install(
     // path signature is null both times but the parent has flipped).
     $initialSignature = envlite_phase5_path_signature($pluginDir);
     $initialParentSignature = envlite_phase5_path_signature(dirname($pluginDir));
+    // Containment guard: refuse to proceed if the resolved plugin
+    // parent escapes the checkout. Has to run BEFORE the
+    // alreadyInstalled skip path too — that path reads $dbCopy and
+    // writes db.php without ever invoking apply_extract, so an
+    // ancestor symlink (e.g. src/wp-content → /tmp/elsewhere) would
+    // otherwise let the cached-install path read db.copy through the
+    // link and stamp db.php in the user's repo from outside content.
+    // For a fresh wordpress-develop checkout the parent
+    // src/wp-content/plugins is tracked and always exists; if for
+    // some reason it doesn't, the helper throws with a phase 5
+    // diagnostic and the user can fix the layout.
+    envlite_phase5_assert_parent_inside_repo($repoRoot, dirname($pluginDir));
     $pinMatches = ($state['phase5.recorded_pin_sha'] ?? null) === ENVLITE_SQLITE_PLUGIN_SHA256;
     $alreadyInstalled = !$rebuild
         && $pluginIsRealDir

@@ -774,10 +774,18 @@ before being overwritten; `--force` answers yes to every such prompt.
    extraction succeeds — subsequent `up` runs compare against this
    to detect a code-level pin bump.
 
-   Immediately before invoking `ZipArchive::extractTo`, verify the
-   resolved (canonical) plugin parent stays under the canonical repo
-   root, AND re-check the identity of **both** the plugin path and
-   its parent directory (`src/wp-content/plugins/`). The `realpath()`
+   Before the step-1 skip predicate is evaluated, AND immediately
+   before invoking `ZipArchive::extractTo`, verify the resolved
+   (canonical) plugin parent stays under the canonical repo root.
+   The pre-skip check is essential because the cached-install short-
+   circuit (manifest + db.copy + pin) never reaches the extract
+   path, but it still reads `db.copy` and writes `db.php` — through
+   any ancestor symlink that resolves outside the checkout. The
+   pre-extract check is run a second time after the clear pass so
+   any race that swapped an ancestor between the initial validation
+   and the actual `extractTo` call is caught. Re-check the identity
+   of **both** the plugin path and its parent directory
+   (`src/wp-content/plugins/`). The `realpath()`
    containment check catches ANCESTOR symlinks (e.g.
    `src/wp-content` itself swapped to a symlink to outside the
    checkout); `is_link($parentDir)` is false in that case because
