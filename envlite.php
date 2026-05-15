@@ -523,7 +523,7 @@ function envlite_proc_open(array $cmd, array $descriptors, &$pipes, ?string $cwd
     );
 }
 
-/** Capture variant: returns [$exit, $stdout, $stderr]. Used by Phase 0. */
+/** Capture variant: returns [$exit, $stdout, $stderr]. Used by Phase 0 and Phase 3. */
 function envlite_proc_capture(array $cmd, ?string $cwd = null): array {
     $proc = envlite_proc_open(
         $cmd,
@@ -584,16 +584,9 @@ function envlite_drain_two_pipes($pipe1, $pipe2): array {
     return [$buf1, $buf2];
 }
 
-/** Streaming variant: child stdio inherits the parent's. Used by Phase 3 and the dev-server fallback on Windows. */
-function envlite_proc_stream(array $cmd, ?string $cwd = null, bool $stdoutToStderr = false): int {
-    // Setup phases (Phase 3 build, Phase 8 install) redirect child stdout
-    // to parent stderr because envlite reserves stdout for tool output
-    // semantics — a caller redirecting stdout from `up --no-serve`
-    // shouldn't capture build noise mixed with anything envlite writes.
-    // The dev-server fallback keeps the natural stdout/stderr split so
-    // `php -S` access logs land where the user expects.
-    $stdout = $stdoutToStderr ? STDERR : STDOUT;
-    $proc = envlite_proc_open($cmd, [0 => STDIN, 1 => $stdout, 2 => STDERR], $pipes, $cwd);
+/** Streaming variant: child stdio inherits the parent's. Used by the Windows dev-server fallback. */
+function envlite_proc_stream(array $cmd, ?string $cwd = null): int {
+    $proc = envlite_proc_open($cmd, [0 => STDIN, 1 => STDOUT, 2 => STDERR], $pipes, $cwd);
     if (!is_resource($proc)) { return -1; }
     return proc_close($proc);
 }
@@ -930,14 +923,14 @@ function envlite_run_parallel_buffered(array $jobs): array {
 }
 
 /**
- * Format the failure dump for the parallel install pair: every job's
- * buffer under a `--- <label> ---` separator, with a trailing newline
- * if the buffer didn't end with one. Pure; called by
- * envlite_phase24_parallel on any failure.
+ * Format a subprocess failure dump: every job's buffer under a
+ * `--- <label> ---` separator, with a trailing newline if the buffer
+ * didn't end with one. Pure; called by envlite_phase24_parallel on
+ * any failure and by envlite_phase3_build_dev for its single-job dump.
  *
  * @param array<string, array{exit:int, output:string}> $results
  */
-function envlite_phase24_format_dump(array $results): string {
+function envlite_format_subprocess_dump(array $results): string {
     $out = '';
     foreach ($results as $label => $r) {
         $out .= "--- $label ---\n";
@@ -1013,7 +1006,7 @@ function envlite_phase24_parallel(string $repoRoot, bool $rebuild): array {
         // separators." The surviving partner's output often carries
         // warnings/context relevant to the failure, so dump every job's
         // buffer, not just the failed one(s).
-        fwrite(STDERR, envlite_phase24_format_dump($results));
+        fwrite(STDERR, envlite_format_subprocess_dump($results));
         if (count($failed) === 1) {
             $label = array_keys($failed)[0];
             $phaseN = $label === 'npm ci' ? 2 : 4;
@@ -1035,6 +1028,13 @@ function envlite_phase24_parallel(string $repoRoot, bool $rebuild): array {
  * Phase 3 — npm run build:dev, serial after phases 2 & 4.
  * Skips when both deps phases skipped, sentinel exists, and recorded
  * hashes still match. `--no-build` forces skip; `--rebuild` forces run.
+ *
+ * Output is buffered, not streamed: build:dev prints hundreds of
+ * webpack lines on every run, which drowns out envlite's own status
+ * lines and is uninteresting on success. On failure, the captured
+ * stdout+stderr is dumped under a `--- npm run build:dev ---`
+ * separator (matching the phase 2/4 dump format) before the throw
+ * surfaces as `envlite up: phase 3: ...`.
  */
 function envlite_phase3_build_dev(
     string $repoRoot,
@@ -1075,8 +1075,17 @@ function envlite_phase3_build_dev(
     unset($state['phase3.recorded_npm_hash'], $state['phase3.recorded_composer_hash']);
     envlite_state_save($repoRoot, $state);
 
-    $exit = envlite_proc_stream(['npm', 'run', 'build:dev'], $repoRoot, true);
+    fwrite(STDERR, "envlite up: building assets\u{2026}\n");
+    [$exit, $stdout, $stderr] = envlite_proc_capture(['npm', 'run', 'build:dev'], $repoRoot);
     if ($exit !== 0) {
+        // proc_capture returns stdout and stderr separately because it
+        // drains the pipes concurrently to avoid pipe-buffer deadlocks;
+        // chronological interleaving is therefore lost. Concatenate them
+        // for the dump — webpack errors land on stderr, informational
+        // lines on stdout, and both are useful for diagnosis.
+        fwrite(STDERR, envlite_format_subprocess_dump([
+            'npm run build:dev' => ['exit' => $exit, 'output' => $stdout . $stderr],
+        ]));
         throw new \RuntimeException("phase 3: npm run build:dev failed (exit $exit)");
     }
 
@@ -1725,6 +1734,8 @@ function envlite_cmd_up(array $args, bool $force): int {
 
     envlite_phase0_run($repoRoot);
 
+    fwrite(STDERR, "envlite up: getting ready\u{2026}\n");
+
     // Phase 1 may write `.cache/envlite/port` and update the manifest, and
     // envlite_atomic_write throws RuntimeException on a failed temp-file
     // write or rename (permissions, full disk, read-only checkout). Wrap
@@ -1735,7 +1746,6 @@ function envlite_cmd_up(array $args, bool $force): int {
         $resolvedPort = envlite_phase1_discover_port($repoRoot, $port);
     });
     if ($rc !== 0) { return $rc; }
-    fwrite(STDERR, "envlite up: port $resolvedPort\n");
 
     // Persist the .ht.sqlite observation now that Phase 1 has succeeded
     // and we are committed to running setup. The spec's bind-failure
@@ -1806,7 +1816,7 @@ function envlite_cmd_up(array $args, bool $force): int {
     }
 
     if ($noServe) {
-        fwrite(STDERR, "envlite up: setup complete (--no-serve; not launching dev server)\n");
+        fwrite(STDERR, "envlite up: environment ready (--no-serve; not starting dev server)\n");
         return 0;
     }
 
@@ -1815,10 +1825,10 @@ function envlite_cmd_up(array $args, bool $force): int {
         return 1;
     }
 
-    fwrite(STDERR, "envlite up: serving http://127.0.0.1:$resolvedPort/ (admin / password)\n");
+    fwrite(STDERR, "envlite up: environment ready, starting dev server on http://127.0.0.1:$resolvedPort/ (admin / password)\n");
     // Hand off to the dev-server launcher. pcntl on Unix means this function
-    // never returns on success; the "serving …" line above is the last thing
-    // envlite itself prints.
+    // never returns on success; the line above is the last thing envlite
+    // itself prints.
     return envlite_run_dev_server($repoRoot, $resolvedPort);
 }
 
