@@ -183,12 +183,28 @@ function envlite_atomic_write(string $path, string $bytes): string {
         fclose($fh); @unlink($tmp);
         throw new \RuntimeException("short write to $tmp");
     }
-    // fsync for crash-durability before rename. Available since PHP 8.1; on
-    // older PHPs we settle for fflush, which is the best we can do without
-    // pulling in extensions.
-    fflush($fh);
-    if (function_exists('fsync')) { @fsync($fh); }
-    fclose($fh);
+    // fsync for crash-durability before rename. Available since PHP 8.1;
+    // on older PHPs we settle for fflush, which is the best we can do
+    // without pulling in extensions. Check returns at every step:
+    // delayed allocation on tmpfs, ENOSPC on a full disk, and EIO on a
+    // network filesystem can all surface only at flush/fsync/close time
+    // — `fwrite` succeeds because the bytes hit a kernel buffer but the
+    // backing store never accepts them. Renaming past that point would
+    // commit a temp file whose contents were never durable, and the
+    // manifest entry would record the SHA of bytes that don't actually
+    // exist on disk.
+    if (@fflush($fh) === false) {
+        fclose($fh); @unlink($tmp);
+        throw new \RuntimeException("fflush failed for $tmp");
+    }
+    if (function_exists('fsync') && @fsync($fh) === false) {
+        fclose($fh); @unlink($tmp);
+        throw new \RuntimeException("fsync failed for $tmp");
+    }
+    if (@fclose($fh) === false) {
+        @unlink($tmp);
+        throw new \RuntimeException("fclose failed for $tmp");
+    }
     // Clear a non-regular destination before the rename. PHP's rename()
     // can replace a regular file or a non-existent path atomically, but
     // it cannot overwrite a directory (POSIX EISDIR). Callers that hit
