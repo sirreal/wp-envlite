@@ -1,11 +1,6 @@
 #!/usr/bin/env php
 <?php
 const ENVLITE_VERSION = '0.1.0';
-const ENVLITE_BUILD   = '';
-
-function envlite_version_string(): string {
-	return ENVLITE_VERSION . (ENVLITE_BUILD !== '' ? ' (' . ENVLITE_BUILD . ')' : '');
-}
 
 function envlite_help_text(): string {
 	return
@@ -1724,7 +1719,7 @@ function envlite_main(array $argv): int {
         return 0;
     }
     if ($sub === '--version' || $sub === '-V') {
-        echo envlite_version_string() . "\n";
+        echo ENVLITE_VERSION . "\n";
         return 0;
     }
     if ($sub === 'up')    { return envlite_cmd_up($args, $force); }

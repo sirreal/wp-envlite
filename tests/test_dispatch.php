@@ -11,14 +11,6 @@ function test_dispatch_version_returns_zero() {
     envlite_assert_eq(0, envlite_main(['envlite.php', '-V']));
 }
 
-function test_dispatch_version_string_contains_version() {
-    $str = envlite_version_string();
-    envlite_assert(
-        strpos($str, ENVLITE_VERSION) !== false,
-        "version string '$str' does not contain ENVLITE_VERSION"
-    );
-}
-
 function test_dispatch_unknown_subcommand_returns_two() {
     envlite_assert_eq(2, envlite_main(['envlite.php', 'bogus']));
 }
