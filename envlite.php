@@ -126,10 +126,12 @@ function envlite_manifest_save(string $repoRoot, array $entries): void {
     foreach ($entries as $path => $hash) {
         $lines .= "$hash  $path\n";
     }
-    $manifestPath = envlite_manifest_path($repoRoot);
-    $dir = dirname($manifestPath);
-    if (!is_dir($dir)) { mkdir($dir, 0755, true); }
-    envlite_atomic_write($manifestPath, $lines);
+    // envlite_atomic_write handles parent-directory creation (@-suppressed
+    // so a failure surfaces only via its RuntimeException with the envlite
+    // prefix). A duplicate `mkdir` here would emit a raw PHP warning ahead
+    // of the handled error on a read-only checkout or with a blocker at
+    // the cache path, violating the spec's diagnostic-prefix contract.
+    envlite_atomic_write(envlite_manifest_path($repoRoot), $lines);
 }
 
 function envlite_state_path(string $repoRoot): string {
@@ -158,10 +160,10 @@ function envlite_state_save(string $repoRoot, array $entries): void {
     foreach ($entries as $key => $value) {
         $lines .= "$key\t$value\n";
     }
-    $path = envlite_state_path($repoRoot);
-    $dir = dirname($path);
-    if (!is_dir($dir)) { mkdir($dir, 0755, true); }
-    envlite_atomic_write($path, $lines);
+    // See envlite_manifest_save for why the parent mkdir lives only in
+    // envlite_atomic_write (@-suppressed, surfaces failures via the
+    // envlite-prefixed RuntimeException).
+    envlite_atomic_write(envlite_state_path($repoRoot), $lines);
 }
 
 function envlite_atomic_write(string $path, string $bytes): string {
