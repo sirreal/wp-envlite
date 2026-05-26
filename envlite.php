@@ -1,6 +1,6 @@
 #!/usr/bin/env php
 <?php
-const ENVLITE_VERSION = '0.1.0';
+const ENVLITE_VERSION = '0.1.1';
 
 function envlite_help_text(): string {
 	return
