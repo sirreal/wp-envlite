@@ -419,49 +419,10 @@ function test_phase5_clear_plugin_blocker_throws_when_symlink_cannot_be_removed(
     }
 }
 
-function test_phase5_install_aborts_when_plugin_path_shape_changes_during_fetch() {
-    // Round 17 P2 regression: the initial ownership scan and prompt fire
-    // before the HTTP fetch + SHA verify + zip open window. If another
-    // process (or the user) creates an entry at the plugin path during
-    // that window, the clear pass deletes it without prompting — the
-    // initial consent (or `--force`) was for whatever was there at scan
-    // time, not for the new entry. The fix re-stats the path
-    // immediately before the clear and aborts if its shape changed.
-    //
-    // Exercise with a fetcher that flips the on-disk shape mid-flight:
-    //   - initial scan: plugin path doesn't exist (somethingExists=false)
-    //   - fetcher runs: creates a user directory at the plugin path
-    //   - clear pass: re-stat sees a real dir where there was nothing →
-    //     throw before clobbering
-    if (DIRECTORY_SEPARATOR !== '/') { return; }
-    $dir = envlite_test_make_fixture_repo();
-    $pluginPath = "$dir/src/wp-content/plugins/sqlite-database-integration";
-    envlite_rrmdir($pluginPath); // initial scan: nothing there
-
-    $thrown = null;
-    try {
-        envlite_phase5_install($dir, true, false,
-            static function () use ($pluginPath): string {
-                // Simulate concurrent interference: a user-installed
-                // plugin appears at the path during the fetch window.
-                mkdir($pluginPath);
-                file_put_contents("$pluginPath/user-file", 'must-not-be-clobbered');
-                // Still throw so we don't proceed to extract (avoiding
-                // the network dependency on wordpress.org for this test).
-                throw new \RuntimeException('fetcher returning early to bound the test');
-            });
-    } catch (\RuntimeException $e) {
-        $thrown = $e;
-    }
-    envlite_assert($thrown !== null, 'fetcher RuntimeException must propagate');
-    // Either we got the fetcher's own throw (the race-detection branch
-    // is downstream, so the fetcher's early throw wins on this path) OR
-    // the race-detection branch fired. Either way the user's file must
-    // survive — the consent at scan time was for "nothing" and the new
-    // tree was not part of that consent.
-    envlite_assert(file_exists("$pluginPath/user-file"),
-        'user-created file must not be clobbered by the failed install path');
-}
+// NOTE: an earlier `test_phase5_install_aborts_when_plugin_path_shape_changes_during_fetch`
+// test claimed to exercise the install-path TOCTOU re-check, but its injected
+// fetcher threw BEFORE the re-check code ran — the test would have passed even
+// without the guard. Removed to avoid masking future regressions.
 
 function test_phase5_install_preserves_pin_when_fetcher_throws_pre_extract() {
     // Pre-extract failures (offline HTTP, SHA mismatch, bad zip) must not
@@ -469,22 +430,28 @@ function test_phase5_install_preserves_pin_when_fetcher_throws_pre_extract() {
     // is untouched by those paths, so the next `up` should still satisfy
     // the manifest + db.copy + pin skip predicate and run offline.
     //
-    // We exercise this by routing the install through a fetcher that
-    // throws immediately. The pin invalidation point sits AFTER fetch/
-    // verify/zip-open, so the throw aborts before any state mutation.
+    // Force the install path through the fetch by passing $rebuild=true
+    // (an earlier version of this test deleted db.copy to force the
+    // path; that ALSO broke the very predicate the test is meant to
+    // protect — an implementation that preserved the pin but dropped
+    // db.copy would have passed silently). With $rebuild=true,
+    // db.copy stays on disk; we then assert it AND the pin both
+    // survive the fetcher's throw, so the next offline run can skip.
     $dir = envlite_test_make_fixture_repo();
     $pin = ENVLITE_SQLITE_PLUGIN_SHA256;
+    $dbCopy = "$dir/src/wp-content/plugins/sqlite-database-integration/db.copy";
     envlite_manifest_save($dir, [
         'src/wp-content/plugins/sqlite-database-integration' => 'dir',
     ]);
     envlite_state_save($dir, ['phase5.recorded_pin_sha' => $pin]);
-    // Drop db.copy to force the re-extract path. Manifest + pin remain
-    // intact, so the skip predicate fails only on `is_file($dbCopy)`.
-    unlink("$dir/src/wp-content/plugins/sqlite-database-integration/db.copy");
+    envlite_assert(is_file($dbCopy), 'fixture must have db.copy present');
+    $dbCopyContentsBefore = file_get_contents($dbCopy);
 
     $threw = false;
     try {
-        envlite_phase5_install($dir, true, false, static function (): string {
+        // $rebuild = true forces re-entry into the download/extract path
+        // even though manifest + db.copy + pin all match.
+        envlite_phase5_install($dir, true, true, static function (): string {
             throw new \RuntimeException('fetcher offline');
         });
     } catch (\RuntimeException $e) {
@@ -496,6 +463,13 @@ function test_phase5_install_preserves_pin_when_fetcher_throws_pre_extract() {
     envlite_assert(isset($state['phase5.recorded_pin_sha']),
         'pin must remain in state after a pre-extract failure');
     envlite_assert_eq($pin, $state['phase5.recorded_pin_sha']);
+
+    // db.copy must survive too — combined with manifest + pin, the next
+    // offline `up` (without --rebuild) skips Phase 5 entirely.
+    envlite_assert(is_file($dbCopy),
+        'db.copy must survive a pre-extract failure so offline reruns can skip');
+    envlite_assert_eq($dbCopyContentsBefore, file_get_contents($dbCopy),
+        'db.copy contents must be byte-identical (no partial write through the failed install)');
 }
 
 function test_phase5_tripwire_throws_when_placeholder_missing() {

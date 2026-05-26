@@ -1,7 +1,14 @@
 <?php
 function envlite_test_tmpdir(string $name): string {
     $dir = sys_get_temp_dir() . '/envlite-test-' . $name . '-' . bin2hex(random_bytes(4));
-    mkdir($dir, 0700, true);
+    // Fail fast if mkdir doesn't succeed. Returning a non-existent path
+    // would cascade into the rest of the test as misleading false
+    // failures or, worse, silently-passing tests that never exercise
+    // the code under test (the fixture file_put_contents/mkdir calls
+    // below would fail silently with @-prefixed errors elsewhere).
+    if (!@mkdir($dir, 0700, true)) {
+        throw new \RuntimeException("envlite_test_tmpdir: cannot create $dir");
+    }
     return $dir;
 }
 
