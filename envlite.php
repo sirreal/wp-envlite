@@ -1187,7 +1187,7 @@ function envlite_phase3_build_dev(
     $headSha     = envlite_phase3_head_sha($repoRoot);
     $state       = envlite_state_load($repoRoot);
 
-    // Skip rule has four hash/identity components: package-lock,
+    // Skip rule has three hash/identity components: package-lock,
     // composer.json, and the HEAD SHA capture from git so a branch
     // switch or `git pull` that changes src/ inputs without changing
     // the lockfiles still rebuilds. Each component compares the
