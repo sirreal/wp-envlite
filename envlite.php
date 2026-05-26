@@ -134,10 +134,12 @@ function envlite_manifest_save(string $repoRoot, array $entries): void {
     foreach ($entries as $path => $hash) {
         $lines .= "$hash  $path\n";
     }
-    $manifestPath = envlite_manifest_path($repoRoot);
-    $dir = dirname($manifestPath);
-    if (!is_dir($dir)) { mkdir($dir, 0755, true); }
-    envlite_atomic_write($manifestPath, $lines);
+    // envlite_atomic_write handles parent-directory creation (@-suppressed
+    // so a failure surfaces only via its RuntimeException with the envlite
+    // prefix). A duplicate `mkdir` here would emit a raw PHP warning ahead
+    // of the handled error on a read-only checkout or with a blocker at
+    // the cache path, violating the spec's diagnostic-prefix contract.
+    envlite_atomic_write(envlite_manifest_path($repoRoot), $lines);
 }
 
 function envlite_state_path(string $repoRoot): string {
@@ -166,10 +168,10 @@ function envlite_state_save(string $repoRoot, array $entries): void {
     foreach ($entries as $key => $value) {
         $lines .= "$key\t$value\n";
     }
-    $path = envlite_state_path($repoRoot);
-    $dir = dirname($path);
-    if (!is_dir($dir)) { mkdir($dir, 0755, true); }
-    envlite_atomic_write($path, $lines);
+    // See envlite_manifest_save for why the parent mkdir lives only in
+    // envlite_atomic_write (@-suppressed, surfaces failures via the
+    // envlite-prefixed RuntimeException).
+    envlite_atomic_write(envlite_state_path($repoRoot), $lines);
 }
 
 function envlite_atomic_write(string $path, string $bytes): string {
@@ -795,7 +797,13 @@ function envlite_phase1_discover_port(string $repoRoot, ?int $explicitPort): int
 
     if ($explicitPort !== null) {
         if (!envlite_phase1_port_is_free($explicitPort)) {
-            envlite_log('up', "phase 1: port $explicitPort is in use; try a different --port (e.g. lsof -nP -iTCP:$explicitPort -sTCP:LISTEN)");
+            // Spec contract: bind failure produces the single diagnostic
+            // line `envlite up: failed to bind 127.0.0.1:<port>`. Phase 1's
+            // explicit-port path is just that bind failure — don't prepend
+            // `phase 1:` (the documented bind-failure line has no phase
+            // label) or append remediation hints (the README's
+            // troubleshooting table covers them).
+            envlite_log('up', "failed to bind 127.0.0.1:$explicitPort");
             exit(1);
         }
         envlite_phase1_write_cache($repoRoot, $explicitPort);
