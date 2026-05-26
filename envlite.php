@@ -98,7 +98,27 @@ function envlite_manifest_load(string $repoRoot): array {
     //            `clean --force` wipes `.cache/envlite/` (along with
     //            the manifest blocker) and orphans every previously
     //            managed file. Treat it as a hard read failure.
-    if (!file_exists($path) && !is_link($path)) { return []; }
+    if (!file_exists($path) && !is_link($path)) {
+        // Both file_exists and is_link returning false on the manifest
+        // path can mean two things: (a) the manifest is really absent
+        // (the common first-run case — empty manifest, fine), or (b)
+        // the state directory exists but lacks search/read permission
+        // so PHP can't tell whether the manifest is in there. Case (b)
+        // looks identical to (a) at this level, but treating an
+        // inaccessible-but-present manifest as empty causes the same
+        // ownership-loss scenarios codex flagged in rounds 13/14:
+        // `clean --force` would walk the empty list and wipe
+        // `.cache/envlite/` along with whatever ownership records it
+        // hid, orphaning every managed file. Probe the state dir
+        // explicitly; if it exists but isn't accessible, throw.
+        $stateDir = dirname($path);
+        if (is_dir($stateDir) && @scandir($stateDir) === false) {
+            throw new \RuntimeException(
+                "cannot read state directory $stateDir; manifest may exist but is inaccessible"
+            );
+        }
+        return [];
+    }
     if (!is_file($path) || is_link($path)) {
         throw new \RuntimeException(
             "manifest at $path is not a regular file; refusing to load"
@@ -194,12 +214,28 @@ function envlite_atomic_write(string $path, string $bytes): string {
         fclose($fh); @unlink($tmp);
         throw new \RuntimeException("short write to $tmp");
     }
-    // fsync for crash-durability before rename. Available since PHP 8.1; on
-    // older PHPs we settle for fflush, which is the best we can do without
-    // pulling in extensions.
-    fflush($fh);
-    if (function_exists('fsync')) { @fsync($fh); }
-    fclose($fh);
+    // fsync for crash-durability before rename. Available since PHP 8.1;
+    // on older PHPs we settle for fflush, which is the best we can do
+    // without pulling in extensions. Check returns at every step:
+    // delayed allocation on tmpfs, ENOSPC on a full disk, and EIO on a
+    // network filesystem can all surface only at flush/fsync/close time
+    // — `fwrite` succeeds because the bytes hit a kernel buffer but the
+    // backing store never accepts them. Renaming past that point would
+    // commit a temp file whose contents were never durable, and the
+    // manifest entry would record the SHA of bytes that don't actually
+    // exist on disk.
+    if (@fflush($fh) === false) {
+        fclose($fh); @unlink($tmp);
+        throw new \RuntimeException("fflush failed for $tmp");
+    }
+    if (function_exists('fsync') && @fsync($fh) === false) {
+        fclose($fh); @unlink($tmp);
+        throw new \RuntimeException("fsync failed for $tmp");
+    }
+    if (@fclose($fh) === false) {
+        @unlink($tmp);
+        throw new \RuntimeException("fclose failed for $tmp");
+    }
     // Clear a non-regular destination before the rename. PHP's rename()
     // can replace a regular file or a non-existent path atomically, but
     // it cannot overwrite a directory (POSIX EISDIR). Callers that hit

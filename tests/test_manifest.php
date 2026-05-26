@@ -74,6 +74,38 @@ function test_manifest_load_throws_when_path_is_symlink_to_file() {
         'error must name the non-regular case; got: ' . $thrown->getMessage());
 }
 
+function test_manifest_load_throws_when_state_dir_unreadable() {
+    // Round 24 regression: when `.cache/envlite/` exists but lacks
+    // search/read permission, file_exists($path) and is_link($path) both
+    // return false on the manifest path — PHP can't even look inside.
+    // The previous loader returned [] (empty manifest) for that case,
+    // making `clean --force` silently wipe `.cache/envlite/` along with
+    // the inaccessible manifest, orphaning every previously managed
+    // file. The fix probes the parent and throws on inaccessibility.
+    if (DIRECTORY_SEPARATOR !== '/' || posix_geteuid() === 0) { return; }
+    $dir = envlite_test_tmpdir('manifest-state-unreadable');
+    mkdir("$dir/.cache/envlite", 0755, true);
+    file_put_contents("$dir/.cache/envlite/manifest",
+        str_repeat('a', 64) . "  some/path\n");
+    // Strip search permission on the state directory so PHP can't
+    // traverse into it.
+    chmod("$dir/.cache/envlite", 0000);
+    try {
+        $thrown = null;
+        try {
+            envlite_manifest_load($dir);
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+        envlite_assert($thrown !== null,
+            'manifest_load must throw when the state dir is unreadable');
+        envlite_assert(strpos($thrown->getMessage(), 'cannot read state directory') !== false,
+            'error must surface the inaccessible state dir; got: ' . $thrown->getMessage());
+    } finally {
+        chmod("$dir/.cache/envlite", 0755);
+    }
+}
+
 function test_manifest_load_throws_when_file_exists_but_unreadable() {
     // Round 13 regression: file_get_contents returns false on read
     // failure, and the prior implementation foreach'd the false and
