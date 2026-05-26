@@ -575,7 +575,7 @@ gitignored — a clean checkout has none of them.
 assets (compiled scripts, styles, and blocks). Without a build, phpunit
 fails to bootstrap WordPress.
 
-**Skip rule:** envlite skips Phase 3 if **all four** are true:
+**Skip rule:** envlite skips Phase 3 if **all five** are true:
 
 1. Phase 2 was skipped this run (i.e. `node_modules/` is current).
 2. Phase 4 was skipped this run (i.e. `vendor/` is current).
@@ -586,6 +586,33 @@ fails to bootstrap WordPress.
 4. `.cache/envlite/state` records `phase3.recorded_npm_hash` matching the
    current `package-lock.json` hash, AND `phase3.recorded_composer_hash`
    matching the current `composer.json` hash.
+5. `.cache/envlite/state` records `phase3.recorded_head_sha` matching
+   the current resolved-HEAD SHA. The HEAD SHA detects branch
+   switches, `git pull`s, and rebases that change build inputs under
+   `src/` without changing the lockfiles — without this component
+   Phase 3 would skip after such operations and leave stale generated
+   assets from the previous source tree.
+
+   Resolution reads git plumbing files directly (no shell-out to git):
+   - `$repoRoot/.git` may be a directory (plain checkout) or a file
+     containing `gitdir: <path>` (linked worktree from `git worktree
+     add`). Resolve to the per-worktree git dir accordingly; a
+     relative `gitdir:` target is rooted at the worktree directory.
+   - Inside the per-worktree dir, `HEAD` is either a literal 40-hex
+     SHA (detached HEAD, returned as-is) or `ref: refs/...`.
+   - For the ref form, look up the ref in:
+     1. The per-worktree git dir (per-tree refs/heads live there in
+        a linked worktree).
+     2. The *common* git dir, found via the `commondir` file inside
+        the per-worktree git dir (or the same dir for a plain
+        checkout). Other refs and `packed-refs` live in the common
+        dir.
+
+   A checkout outside any git repo, or one with an unresolvable HEAD,
+   returns null; the comparison `null === null` still allows skip so
+   non-git trees keep the cached build. Uncommitted edits in `src/`
+   that don't move HEAD remain the user's responsibility — `--rebuild`
+   is the escape.
 
 The verbose recorded hashes (rather than a single concat hash) are
 deliberately readable: `cat .cache/envlite/state` shows an implementer
@@ -1145,7 +1172,7 @@ Files inside:
 |---|---|---|
 | `port` | Cached site port (Phase 1). | A single integer line. |
 | `manifest` | Records every file/directory envlite has written, with the content hash at the time of writing. | One entry per line: `<sha256>  <relative path>`. The hash is sha256 of the **bytes envlite is about to write**, computed before the temp file is renamed into place — never re-read from disk afterwards. `dir` in the hash field denotes a directory entry. |
-| `state` | Per-phase skip metadata (input hashes, pin SHAs). Read by `up` to decide which phases can be skipped. | One entry per line: `<key>\t<value>\n`. Keys are bare ASCII (`phase2.input_hash`, `phase4.input_hash`, `phase3.recorded_npm_hash`, `phase3.recorded_composer_hash`, `phase5.recorded_pin_sha`). Values are 64-char lowercase hex. Unknown keys are ignored on read; missing expected keys are treated as "phase has never succeeded" → run the phase. |
+| `state` | Per-phase skip metadata (input hashes, pin SHAs, HEAD SHA). Read by `up` to decide which phases can be skipped. | One entry per line: `<key>\t<value>\n`. Keys are bare ASCII (`phase2.input_hash`, `phase4.input_hash`, `phase3.recorded_npm_hash`, `phase3.recorded_composer_hash`, `phase3.recorded_head_sha`, `phase5.recorded_pin_sha`). Values are 40-char (head SHA) or 64-char (other) lowercase hex. Unknown keys are ignored on read; missing expected keys are treated as "phase has never succeeded" → run the phase. |
 
 **State file vs. manifest.** The two files have different write
 triggers and different contracts:
@@ -1466,7 +1493,7 @@ Phase-specific notes:
 | 0 (preflight) | Always runs. |
 | 1 (port) | Re-uses the cached port if the cache exists and is in `[1, 65535]`. Otherwise re-discovers from the 8100–8899 pool. |
 | 2 (npm ci) | Skips if `node_modules/` exists AND `.cache/envlite/state` records `phase2.input_hash` matching `package-lock.json`. Otherwise spawns `npm ci`; on success, records the current hash. |
-| 3 (build:dev) | Skips if Phases 2 and 4 both skipped this run AND `src/wp-includes/js/dist/` exists AND recorded `phase3.recorded_npm_hash` / `phase3.recorded_composer_hash` match current. `--no-build` forces skip; `--rebuild` forces run. |
+| 3 (build:dev) | Skips if Phases 2 and 4 both skipped this run AND `src/wp-includes/js/dist/` exists AND recorded `phase3.recorded_npm_hash` / `phase3.recorded_composer_hash` match current AND recorded `phase3.recorded_head_sha` matches the current `.git/HEAD` resolution (non-git trees: null === null also skips). `--no-build` forces skip; `--rebuild` forces run. |
 | 4 (composer install) | Skips if `vendor/` exists AND `.cache/envlite/state` records `phase4.input_hash` matching `composer.json`. Otherwise spawns `composer install`; on success, records the current hash. |
 | 5 (SQLite drop-in) | Skips download/extract if the plugin dir is in the manifest, `db.copy` is present, AND `phase5.recorded_pin_sha` matches the current code literal. Always copies `db.copy` → `db.php` (manifest contract governs the write). |
 | 6 (`wp-tests-config.php`) | Manifest contract above. |

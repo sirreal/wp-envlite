@@ -1052,6 +1052,119 @@ function envlite_phase24_parallel(string $repoRoot, bool $rebuild): array {
  * separator (matching the phase 2/4 dump format) before the throw
  * surfaces as `envlite up: phase 3: ...`.
  */
+/**
+ * Read the SHA the current HEAD points at, without shelling out to git.
+ * Returns null when the repo isn't a git checkout, when HEAD is in a
+ * shape we don't understand, or when the ref can't be resolved.
+ *
+ * Used as a Phase 3 cache key. The deps-hash + sentinel check on its
+ * own can't tell that the user has run `git pull` or switched branches
+ * to a tree where build inputs under `src/` changed but
+ * `package-lock.json` and `composer.json` didn't — without this
+ * fingerprint, Phase 3 would skip and leave stale build artifacts from
+ * the previous source tree. The HEAD SHA changes on every commit/pull/
+ * branch-switch in a wordpress-develop checkout, which is the common
+ * vector for source changes; uncommitted edits in `src/` are still the
+ * user's responsibility (use `--rebuild`).
+ */
+function envlite_phase3_head_sha(string $repoRoot): ?string {
+    // Resolve the per-worktree git directory. In a plain checkout this
+    // is `$repoRoot/.git/`; in a linked worktree (`git worktree add ...`)
+    // `$repoRoot/.git` is a regular file containing `gitdir: <path>`
+    // where the worktree's per-tree HEAD/refs live (the object store and
+    // packed-refs still belong to the main repo, but HEAD is local). The
+    // round-22 implementation read `$repoRoot/.git/HEAD` directly and
+    // returned null on a linked worktree, which the skip rule then
+    // mapped to `null === null` and let Phase 3 skip across branch
+    // switches there — exactly the regression this helper was added to
+    // prevent.
+    $gitDir = envlite_phase3_resolve_git_dir($repoRoot);
+    if ($gitDir === null) { return null; }
+    $head = @file_get_contents($gitDir . '/HEAD');
+    if ($head === false) { return null; }
+    $head = trim($head);
+    if (preg_match('/^[0-9a-f]{40}$/', $head)) {
+        return $head; // detached HEAD
+    }
+    if (strpos($head, 'ref: ') !== 0) { return null; }
+    $ref = trim(substr($head, 5));
+    // Loose ref first — refs/heads/<branch> lives under the WORKTREE
+    // gitDir for a linked worktree (per-tree HEAD), but other refs
+    // (tags, remote-tracking) live under the COMMON gitdir. Try the
+    // worktree dir first, then walk up to the common dir if needed.
+    $commonDir = envlite_phase3_resolve_git_common_dir($gitDir);
+    foreach (array_unique([$gitDir, $commonDir]) as $dir) {
+        if ($dir === null) { continue; }
+        $refFile = $dir . '/' . $ref;
+        if (is_file($refFile)) {
+            $sha = trim(@file_get_contents($refFile) ?: '');
+            if (preg_match('/^[0-9a-f]{40}$/', $sha)) { return $sha; }
+        }
+    }
+    // Fallback: packed-refs lives only in the common gitdir.
+    if ($commonDir !== null) {
+        $packed = @file_get_contents($commonDir . '/packed-refs');
+        if ($packed !== false) {
+            foreach (explode("\n", $packed) as $line) {
+                $line = rtrim($line, "\r");
+                if ($line === '' || $line[0] === '#' || $line[0] === '^') { continue; }
+                if (preg_match('/^([0-9a-f]{40}) (.+)$/', $line, $m) && $m[2] === $ref) {
+                    return $m[1];
+                }
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Return the absolute path to the per-worktree git directory for a
+ * checkout at $repoRoot, or null when the checkout isn't a git tree.
+ *   - plain checkout:     `$repoRoot/.git/` (directory)
+ *   - linked worktree:    `$repoRoot/.git` is a file
+ *                          `gitdir: /path/to/main/.git/worktrees/<name>`
+ *                          — return that target.
+ */
+function envlite_phase3_resolve_git_dir(string $repoRoot): ?string {
+    $dotGit = $repoRoot . '/.git';
+    if (is_dir($dotGit) && !is_link($dotGit)) { return $dotGit; }
+    if (is_file($dotGit)) {
+        $contents = @file_get_contents($dotGit);
+        if ($contents === false) { return null; }
+        if (preg_match('/^gitdir:\s*(.+)$/m', $contents, $m)) {
+            $target = trim($m[1]);
+            // Relative paths in `gitdir:` are resolved against the
+            // location of the `.git` file (the worktree root).
+            if ($target !== '' && $target[0] !== '/' && !preg_match('/^[A-Za-z]:/', $target)) {
+                $target = $repoRoot . '/' . $target;
+            }
+            return rtrim($target, '/\\');
+        }
+    }
+    return null;
+}
+
+/**
+ * Resolve the *common* git directory (the main repo's .git) given a
+ * per-worktree git dir. For a plain checkout this is the same path;
+ * for a linked worktree it's read from `commondir` (a file inside the
+ * worktree's gitdir containing the path to the main .git, absolute or
+ * relative to the worktree gitdir).
+ */
+function envlite_phase3_resolve_git_common_dir(string $gitDir): ?string {
+    $commonFile = $gitDir . '/commondir';
+    if (!is_file($commonFile)) {
+        // Plain checkout: the common dir IS the per-worktree dir.
+        return $gitDir;
+    }
+    $target = trim(@file_get_contents($commonFile) ?: '');
+    if ($target === '') { return null; }
+    if ($target[0] !== '/' && !preg_match('/^[A-Za-z]:/', $target)) {
+        $target = $gitDir . '/' . $target;
+    }
+    return rtrim($target, '/\\');
+}
+
 function envlite_phase3_build_dev(
     string $repoRoot,
     bool $rebuild,
@@ -1071,15 +1184,24 @@ function envlite_phase3_build_dev(
     $sentinel    = "$repoRoot/src/wp-includes/js/dist";
     $npmHash     = envlite_phase2_input_hash($repoRoot);
     $composerHash = envlite_phase4_input_hash($repoRoot);
+    $headSha     = envlite_phase3_head_sha($repoRoot);
     $state       = envlite_state_load($repoRoot);
 
+    // Skip rule has three hash/identity components: package-lock,
+    // composer.json, and the HEAD SHA capture from git so a branch
+    // switch or `git pull` that changes src/ inputs without changing
+    // the lockfiles still rebuilds. Each component compares the
+    // current value against the value recorded on the last successful
+    // build; null === null is allowed so a non-git checkout still
+    // gets the skip on identical re-runs.
     $skip = !$rebuild
         && $phase2Skipped
         && $phase4Skipped
         && is_dir($sentinel)
         && $npmHash !== null && $composerHash !== null
         && ($state['phase3.recorded_npm_hash'] ?? null)      === $npmHash
-        && ($state['phase3.recorded_composer_hash'] ?? null) === $composerHash;
+        && ($state['phase3.recorded_composer_hash'] ?? null) === $composerHash
+        && ($state['phase3.recorded_head_sha'] ?? null)      === $headSha;
     if ($skip) { return; }
 
     // Invalidate recorded hashes before attempting the build. `build:dev`
@@ -1088,7 +1210,11 @@ function envlite_phase3_build_dev(
     // recorded hashes still matched, the next `up` would skip Phase 3
     // even though the last build attempt failed. Drop them up front;
     // re-record only on a successful build.
-    unset($state['phase3.recorded_npm_hash'], $state['phase3.recorded_composer_hash']);
+    unset(
+        $state['phase3.recorded_npm_hash'],
+        $state['phase3.recorded_composer_hash'],
+        $state['phase3.recorded_head_sha']
+    );
     envlite_state_save($repoRoot, $state);
 
     fwrite(STDERR, "envlite up: building assets\u{2026}\n");
@@ -1107,6 +1233,11 @@ function envlite_phase3_build_dev(
 
     if ($npmHash !== null)      { $state['phase3.recorded_npm_hash']      = $npmHash; }
     if ($composerHash !== null) { $state['phase3.recorded_composer_hash'] = $composerHash; }
+    // Skip writing the HEAD entry when there's no git repo to fingerprint
+    // — the skip check uses null === null on the absent-side path.
+    // Writing an empty string would later miscompare against current
+    // null and force a needless rebuild.
+    if ($headSha !== null)      { $state['phase3.recorded_head_sha']      = $headSha; }
     envlite_state_save($repoRoot, $state);
 }
 
