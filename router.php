@@ -79,4 +79,38 @@ if ($path !== '/' && file_exists($file)) {
     }
 }
 
+// Walk-back probe for trailing-slash-on-file and PATH_INFO-style URLs.
+// POSIX stat() rejects a trailing slash on a regular file with ENOTDIR,
+// so `file_exists('/wp-admin/plugins.php/')` is false even though the
+// underlying file exists. Without this probe the request falls through
+// to the WP front controller, which renders the home page — the
+// symptom users see after their browser caches a 301 from
+// redirect_canonical() that appended a slash. php -S would resolve
+// these URLs natively (see sapi/cli/php_cli_server.c ~L1443) by
+// walking backward through the URL until it finds a regular file,
+// then running it with SCRIPT_NAME/PATH_INFO split at the boundary —
+// but only if the router returns false. We mirror that walk-back here
+// so php -S takes over for any URL where an ancestor is a real file.
+if (!file_exists($file)) {
+    $probe = rtrim($path, '/');
+    while ($probe !== '') {
+        $probeFile = $docroot . $probe;
+        if (file_exists($probeFile)) {
+            if (is_file($probeFile)) {
+                return false;
+            }
+            // An ancestor exists but is a directory (e.g. /wp-admin/
+            // for /wp-admin/missing.php). PHP CLI server would 404 here;
+            // we instead fall through to the front controller so WP can
+            // serve its own 404 (or rewrite to a real handler).
+            break;
+        }
+        $cut = strrpos($probe, '/');
+        if ($cut === false || $cut === 0) {
+            break;
+        }
+        $probe = substr($probe, 0, $cut);
+    }
+}
+
 require $docroot . '/index.php';
