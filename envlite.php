@@ -2190,6 +2190,37 @@ function envlite_clean_collect(array $manifest): array {
  * @return string[] manifest-relative paths that remained after the attempt
  */
 function envlite_clean_apply(string $repoRoot, array $paths): array {
+    $canonicalRoot = @realpath($repoRoot);
+    if ($canonicalRoot === false) {
+        // Without a canonical root we can't enforce the containment
+        // check below. Fail every entry rather than risk recursing
+        // outside the checkout.
+        return $paths;
+    }
+    // Normalize separators before the prefix comparison. realpath on
+    // Windows returns backslash-separated paths; the root prefix would
+    // otherwise end in `/` while the resolved entries used `\`, and
+    // the `strpos starts-with` check would treat every legitimate
+    // entry as escaping the checkout — `clean` would fail on Windows
+    // for normal output paths like `C:\repo\src\wp-config.php`.
+    $rootPrefix = envlite_path_to_forward_slashes($canonicalRoot);
+    $rootPrefix = rtrim($rootPrefix, '/') . '/';
+
+    // The state directory itself may be a symlink to a target outside
+    // the checkout — a spec-supported user setup (redirected state to
+    // a faster filesystem). Manifest entries under `.cache/envlite/*`
+    // (Phase 1's `port`, plus the manifest itself) then resolve via
+    // the symlink to outside repoRoot. The containment check needs an
+    // exception for those: they're allowed inside the (resolved) state
+    // dir regardless of where it points, but nowhere else.
+    $stateDir = "$repoRoot/.cache/envlite";
+    $stateDirCanonical = @realpath($stateDir);
+    $stateDirPrefix = null;
+    if ($stateDirCanonical !== false) {
+        $stateDirPrefix = envlite_path_to_forward_slashes($stateDirCanonical);
+        $stateDirPrefix = rtrim($stateDirPrefix, '/') . '/';
+    }
+
     $failed = [];
     foreach ($paths as $rel) {
         $abs = "$repoRoot/$rel";
@@ -2200,6 +2231,35 @@ function envlite_clean_apply(string $repoRoot, array $paths): array {
         // an orphan once the manifest itself is wiped by clean. is_link
         // catches that case.
         if (!file_exists($abs) && !is_dir($abs) && !is_link($abs)) { continue; }
+        // Ancestor-symlink defense: a manifest entry whose ancestor has
+        // been swapped for a symlink (e.g. `src/wp-content/plugins` →
+        // `/tmp/shared-plugins`) would let envlite_rrmdir follow the
+        // link and recursively delete files outside the checkout — the
+        // round-8 top-level is_link guard only protects the leaf
+        // component. Resolve the FULL path and refuse if it escapes
+        // the canonical repo root. realpath of a symlink resolves
+        // through every intermediate component, so anything pointed
+        // outside the checkout falls out cleanly. Broken symlinks have
+        // no resolved path; for those, fall back to using the literal
+        // join (the leaf is the symlink itself, which we unlink — no
+        // recursion possible).
+        $canonicalAbs = is_link($abs) && !file_exists($abs)
+            ? null  // broken symlink, unlinkable directly
+            : @realpath($abs);
+        if ($canonicalAbs !== null && $canonicalAbs !== false) {
+            $canonicalAbsNorm = envlite_path_to_forward_slashes($canonicalAbs);
+            $insideRepo = strpos($canonicalAbsNorm . '/', $rootPrefix) === 0;
+            $insideState = $stateDirPrefix !== null
+                && strpos($canonicalAbsNorm . '/', $stateDirPrefix) === 0;
+            if (!$insideRepo && !$insideState) {
+                // Resolved path escapes both the checkout AND the
+                // (possibly-symlinked) state directory. Refuse to touch
+                // it. Record as failed so the caller preserves the
+                // manifest and the user can investigate.
+                $failed[] = $rel;
+                continue;
+            }
+        }
         if (is_dir($abs) && !is_link($abs)) {
             envlite_rrmdir($abs);
         } else {
@@ -2210,6 +2270,20 @@ function envlite_clean_apply(string $repoRoot, array $paths): array {
         }
     }
     return $failed;
+}
+
+/**
+ * Cross-platform normalizer: rewrite `\` to `/` regardless of host OS.
+ * Used by clean's containment check to compare paths produced by
+ * `realpath()` (which returns OS-native separators) against a fixed
+ * forward-slash convention. Distinct from envlite_path_to_posix(),
+ * which preserves `\` on Unix because the character is a legal
+ * filename byte there — that function operates on USER-supplied paths,
+ * while this one operates on realpath()'d strings that already include
+ * any necessary canonicalization.
+ */
+function envlite_path_to_forward_slashes(string $path): string {
+    return str_replace('\\', '/', $path);
 }
 
 function envlite_rrmdir(string $dir): void {

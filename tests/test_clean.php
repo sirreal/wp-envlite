@@ -252,11 +252,17 @@ function test_clean_walks_manifest_when_state_dir_is_symlink_to_directory() {
     envlite_assert(is_dir("$repo/.cache/envlite"),
         'symlink-to-dir must satisfy is_dir');
 
-    // Seed manifest at the symlink target so the walk finds the
-    // envlite-managed outputs via the symlinked state dir.
+    // Seed a state-dir entry — Phase 1 always records `.cache/envlite/port`
+    // in the manifest, and its resolved path goes THROUGH the state-dir
+    // symlink to outside the checkout. Round-24's containment check would
+    // mark it as escaping and the whole clean would fail; the
+    // state-dir-exception fix lets it through. Without this entry in the
+    // fixture, the test passes against a broken containment check.
+    file_put_contents("$repo/.cache/envlite/port", "8421\n");
     $manifest = [
-        'src/wp-config.php' => hash('sha256', 'envlite-owned'),
-        'wp-tests-config.php' => hash('sha256', 'envlite-owned'),
+        'src/wp-config.php'      => hash('sha256', 'envlite-owned'),
+        'wp-tests-config.php'    => hash('sha256', 'envlite-owned'),
+        '.cache/envlite/port'    => hash('sha256', "8421\n"),
     ];
     envlite_manifest_save($repo, $manifest);
     envlite_assert(file_exists("$stateTarget/manifest"),
@@ -285,6 +291,52 @@ function test_clean_walks_manifest_when_state_dir_is_symlink_to_directory() {
     // user can rm them manually.
     envlite_assert(is_dir($stateTarget),
         'symlink target dir must survive (round 8 safety contract)');
+}
+
+function test_clean_apply_refuses_when_ancestor_is_symlink_to_outside() {
+    // Round 24 P1 regression: rrmdir's top-level is_link guard only
+    // protects the leaf component. When a manifest entry's PARENT (or
+    // any ancestor) has been replaced with a symlink to outside the
+    // checkout, is_dir($abs) for the leaf path resolves through the
+    // ancestor symlink and returns true for a real directory at the
+    // target. envlite_rrmdir then recursively deletes outside the
+    // checkout — a `clean --force` could wipe data the user pointed
+    // the symlink at.
+    if (DIRECTORY_SEPARATOR !== '/') { return; }
+    $repo = envlite_test_tmpdir('clean-ancestor-symlink');
+    // Build a real "outside" tree that must survive.
+    $outside = envlite_test_tmpdir('clean-ancestor-symlink-outside');
+    mkdir("$outside/sqlite-database-integration", 0755, true);
+    file_put_contents("$outside/sqlite-database-integration/precious", 'MUST_SURVIVE');
+    file_put_contents("$outside/peer-file", 'peer-MUST_SURVIVE');
+
+    // Inside the checkout, the manifest claims envlite owns
+    // src/wp-content/plugins/sqlite-database-integration as a `dir`
+    // entry — but the user (or an attacker) has replaced the parent
+    // `src/wp-content/plugins` with a symlink to $outside.
+    mkdir("$repo/src/wp-content", 0755, true);
+    symlink($outside, "$repo/src/wp-content/plugins");
+
+    $manifest = [
+        'src/wp-content/plugins/sqlite-database-integration' => 'dir',
+    ];
+    $failed = envlite_clean_apply($repo, envlite_clean_collect($manifest));
+
+    envlite_assert_eq(
+        ['src/wp-content/plugins/sqlite-database-integration'],
+        $failed,
+        'clean_apply must refuse entries whose resolved path escapes the checkout'
+    );
+    envlite_assert_eq(
+        'MUST_SURVIVE',
+        file_get_contents("$outside/sqlite-database-integration/precious"),
+        'symlink-target contents must NOT be touched by clean_apply'
+    );
+    envlite_assert_eq(
+        'peer-MUST_SURVIVE',
+        file_get_contents("$outside/peer-file"),
+        'peers of the symlink target must also be untouched'
+    );
 }
 
 function test_rrmdir_refuses_to_recurse_into_symlinked_directory() {
