@@ -29,6 +29,29 @@ function envlite_test_router_request(int $port, string $path): array {
     ];
 }
 
+/**
+ * Variant of envlite_test_router_request that does not follow 3xx
+ * redirects and returns the full header list. file_get_contents() by
+ * default chases up to 20 redirects, which collapses 301-then-200
+ * into a single 200 in $http_response_header[0] and hides the
+ * Location header — useless for asserting the router emitted the
+ * canonical-slash redirect.
+ *
+ * @return array{status: ?string, headers: array<int, string>, body: ?string}
+ */
+function envlite_test_router_request_no_follow(int $port, string $path): array {
+    $ctx = stream_context_create(['http' => [
+        'ignore_errors'   => true,
+        'follow_location' => 0,
+    ]]);
+    $body = @file_get_contents("http://127.0.0.1:$port$path", false, $ctx);
+    return [
+        'status'  => $http_response_header[0] ?? null,
+        'headers' => $http_response_header ?? [],
+        'body'    => $body === false ? null : $body,
+    ];
+}
+
 function envlite_test_router_wait_for_bind(int $port, float $timeout_seconds = 3.0): bool {
     $deadline = microtime(true) + $timeout_seconds;
     while (microtime(true) < $deadline) {
@@ -295,6 +318,72 @@ function test_router_serves_from_document_root_not_router_directory() {
         if ($status && $status['running']) {
             @proc_terminate($proc, 15);
         }
+        @proc_close($proc);
+    }
+}
+
+function test_router_redirects_bare_directory_to_trailing_slash() {
+    // Regression: php -S with a router does not 301 bare directory URLs
+    // the way Apache mod_dir (DirectorySlash) and nginx do by default.
+    // Without this redirect, php -S serves wp-admin/index.php for a
+    // request to /wp-admin while the address bar stays slashless, and
+    // relative links on the dashboard (`<a href='plugins.php'>`)
+    // resolve against the parent of /wp-admin — landing the user on
+    // /plugins.php, a sibling of /wp-admin. That misses the file on
+    // disk, falls through to WordPress, and redirect_canonical() 301s
+    // it to /plugins.php/ which renders the home page. The 301 is
+    // browser-cached so the broken state sticks across reloads.
+    $site = realpath(envlite_test_tmpdir('router-dir-slash'));
+    envlite_assert($site !== false);
+    envlite_assert(mkdir("$site/wp-admin", 0777, true));
+    file_put_contents("$site/index.php", "<?php echo 'FRONTPAGE';");
+    file_put_contents("$site/wp-admin/index.php", "<?php echo 'ADMIN';");
+
+    $router = realpath(__DIR__ . '/../router.php');
+    envlite_assert(is_file($router));
+    $port = envlite_test_router_pick_free_port();
+    $argv = [PHP_BINARY, '-S', "127.0.0.1:$port", '-t', $site, $router];
+    $proc = proc_open(
+        $argv,
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        $site
+    );
+    envlite_assert(is_resource($proc));
+
+    try {
+        envlite_assert(envlite_test_router_wait_for_bind($port));
+
+        // Bare directory URL must 301 to the trailing-slash form so
+        // relative links on the served page resolve against the
+        // directory, not its parent. Location is relative (RFC 9110
+        // §10.2.2 permits this) — every browser handles it.
+        $r = envlite_test_router_request_no_follow($port, '/wp-admin');
+        envlite_assert(strpos($r['status'] ?? '', '301') !== false,
+            'expected 301 for /wp-admin, got: ' . ($r['status'] ?? 'no headers'));
+        envlite_assert(in_array('Location: /wp-admin/', $r['headers'], true),
+            'expected Location: /wp-admin/, got headers: ' . implode(' | ', $r['headers']));
+
+        // Query string must round-trip on the redirect — without it,
+        // GET-with-query navigations to a bare directory would lose
+        // their parameters on the canonical redirect.
+        $r = envlite_test_router_request_no_follow($port, '/wp-admin?foo=bar&baz=qux');
+        envlite_assert(strpos($r['status'] ?? '', '301') !== false,
+            'expected 301 for /wp-admin?foo=bar&baz=qux, got: ' . ($r['status'] ?? 'no headers'));
+        envlite_assert(in_array('Location: /wp-admin/?foo=bar&baz=qux', $r['headers'], true),
+            'expected query string preserved, got headers: ' . implode(' | ', $r['headers']));
+
+        // Already-slashed directory must NOT redirect again — otherwise
+        // the fix would loop and every admin request would 301-bounce.
+        $r = envlite_test_router_request_no_follow($port, '/wp-admin/');
+        envlite_assert(strpos($r['status'] ?? '', '200') !== false,
+            'expected 200 for /wp-admin/, got: ' . ($r['status'] ?? 'no headers'));
+        envlite_assert($r['body'] === 'ADMIN',
+            'expected ADMIN body for /wp-admin/, got: ' . substr($r['body'] ?? '', 0, 100));
+    } finally {
+        foreach ($pipes as $p) { if (is_resource($p)) { @fclose($p); } }
+        $status = @proc_get_status($proc);
+        if ($status && $status['running']) { @proc_terminate($proc, 15); }
         @proc_close($proc);
     }
 }
