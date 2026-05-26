@@ -53,9 +53,27 @@ if ($path !== '/' && file_exists($file)) {
     if (!is_dir($file)) {
         return false;
     }
-    // Existing directory: let the built-in server serve its index.php
-    // (e.g. /wp-admin/ -> wp-admin/index.php). Without an index, fall
-    // through to the front controller to avoid directory listings.
+    // Bare directory URL: 301 to the trailing-slash form so relative links
+    // on the served page resolve against the directory, not its parent.
+    // Without this, php -S serves wp-admin/index.php for a request to
+    // `/wp-admin` while the address bar stays slashless. The dashboard's
+    // sidebar uses relative links (`<a href='plugins.php'>`) which then
+    // resolve to `/plugins.php` (sibling of `/wp-admin`) — that misses
+    // the file on disk, falls through to WordPress, and redirect_canonical()
+    // 301s it to `/plugins.php/` which the front controller serves as the
+    // home page. The 301 is browser-cached, so the broken state sticks
+    // across reloads. Apache mod_dir (DirectorySlash) and nginx both 301
+    // bare directory URLs the same way; this restores that contract.
+    // Built from the raw path so percent-encoding round-trips unchanged.
+    if (substr($path, -1) !== '/') {
+        $qs = $_SERVER['QUERY_STRING'] ?? '';
+        header('Location: ' . $rawPath . '/' . ($qs !== '' ? '?' . $qs : ''), true, 301);
+        return true;
+    }
+    // Existing directory with trailing slash: let the built-in server
+    // serve its index.php (e.g. /wp-admin/ -> wp-admin/index.php).
+    // Without an index, fall through to the front controller to avoid
+    // directory listings.
     if (file_exists(rtrim($file, '/') . '/index.php')) {
         return false;
     }
