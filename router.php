@@ -53,11 +53,63 @@ if ($path !== '/' && file_exists($file)) {
     if (!is_dir($file)) {
         return false;
     }
-    // Existing directory: let the built-in server serve its index.php
-    // (e.g. /wp-admin/ -> wp-admin/index.php). Without an index, fall
-    // through to the front controller to avoid directory listings.
+    // Bare directory URL: 301 to the trailing-slash form so relative links
+    // on the served page resolve against the directory, not its parent.
+    // Without this, php -S serves wp-admin/index.php for a request to
+    // `/wp-admin` while the address bar stays slashless. The dashboard's
+    // sidebar uses relative links (`<a href='plugins.php'>`) which then
+    // resolve to `/plugins.php` (sibling of `/wp-admin`) — that misses
+    // the file on disk, falls through to WordPress, and redirect_canonical()
+    // 301s it to `/plugins.php/` which the front controller serves as the
+    // home page. The 301 is browser-cached, so the broken state sticks
+    // across reloads. Apache mod_dir (DirectorySlash) and nginx both 301
+    // bare directory URLs the same way; this restores that contract.
+    // Built from the raw path so percent-encoding round-trips unchanged.
+    if (substr($path, -1) !== '/') {
+        $qs = $_SERVER['QUERY_STRING'] ?? '';
+        header('Location: ' . $rawPath . '/' . ($qs !== '' ? '?' . $qs : ''), true, 301);
+        return true;
+    }
+    // Existing directory with trailing slash: let the built-in server
+    // serve its index.php (e.g. /wp-admin/ -> wp-admin/index.php).
+    // Without an index, fall through to the front controller to avoid
+    // directory listings.
     if (file_exists(rtrim($file, '/') . '/index.php')) {
         return false;
+    }
+}
+
+// Walk-back probe for trailing-slash-on-file and PATH_INFO-style URLs.
+// POSIX stat() rejects a trailing slash on a regular file with ENOTDIR,
+// so `file_exists('/wp-admin/plugins.php/')` is false even though the
+// underlying file exists. Without this probe the request falls through
+// to the WP front controller, which renders the home page — the
+// symptom users see after their browser caches a 301 from
+// redirect_canonical() that appended a slash. php -S would resolve
+// these URLs natively (see sapi/cli/php_cli_server.c ~L1443) by
+// walking backward through the URL until it finds a regular file,
+// then running it with SCRIPT_NAME/PATH_INFO split at the boundary —
+// but only if the router returns false. We mirror that walk-back here
+// so php -S takes over for any URL where an ancestor is a real file.
+if (!file_exists($file)) {
+    $probe = rtrim($path, '/');
+    while ($probe !== '') {
+        $probeFile = $docroot . $probe;
+        if (file_exists($probeFile)) {
+            if (is_file($probeFile)) {
+                return false;
+            }
+            // An ancestor exists but is a directory (e.g. /wp-admin/
+            // for /wp-admin/missing.php). PHP CLI server would 404 here;
+            // we instead fall through to the front controller so WP can
+            // serve its own 404 (or rewrite to a real handler).
+            break;
+        }
+        $cut = strrpos($probe, '/');
+        if ($cut === false || $cut === 0) {
+            break;
+        }
+        $probe = substr($probe, 0, $cut);
     }
 }
 
