@@ -11,11 +11,12 @@ function envlite_help_text(): string {
 		  envlite <subcommand> [args]
 
 		Commands:
-		  up [--port=N] [--no-build] [--no-serve] [--rebuild]
-		      Set up the checkout and start the dev server. Installs JS/PHP
-		      deps in parallel, builds, writes config, installs the SQLite
-		      drop-in, runs wp_install() if needed, then launches `php -S`.
-		      Re-runs are cheap — unchanged phases are skipped. After install,
+		  up [--port=N] [--no-serve]
+		      Set up the checkout and start the dev server: writes config,
+		      installs the SQLite drop-in, runs wp_install() if needed, then
+		      launches `php -S`. Does NOT install npm/composer deps or build
+		      assets — run those yourself (npm ci && composer install &&
+		      npm run build:dev) before the site can load. After install,
 		      sign in at /wp-login.php with admin / password.
 
 		  clean
@@ -32,9 +33,7 @@ function envlite_help_text(): string {
 		Flags:
 		  --port=N      Port for the dev server. Default: derived from the
 		                checkout path, cached at .cache/envlite/port.
-		  --no-build    Skip `npm run build:dev` even if inputs changed.
 		  --no-serve    Run setup phases only; don't launch the server.
-		  --rebuild     Re-run every setup phase, ignoring cached state.
 		  --force       Answer 'y' to every prompt. Required in CI.
 
 		TEXT;
@@ -239,7 +238,7 @@ function envlite_atomic_write(string $path, string $bytes): string {
     // Clear a non-regular destination before the rename. PHP's rename()
     // can replace a regular file or a non-existent path atomically, but
     // it cannot overwrite a directory (POSIX EISDIR). Callers that hit
-    // this path have already cleared ownership: Phases 5–7 prompted the
+    // this path have already cleared ownership: Phases 2–4 prompted the
     // user (or honored --force) before reaching atomic_write, so by
     // contract any non-regular entry sitting in our way is something
     // the user agreed to overwrite. Internal `.cache/envlite/*` writes
@@ -572,7 +571,7 @@ function envlite_proc_open(array $cmd, array $descriptors, &$pipes, ?string $cwd
     );
 }
 
-/** Capture variant: returns [$exit, $stdout, $stderr]. Used by Phase 0 and Phase 3. */
+/** Capture variant: returns [$exit, $stdout, $stderr]. Used by Phase 0. */
 function envlite_proc_capture(array $cmd, ?string $cwd = null): array {
     $proc = envlite_proc_open(
         $cmd,
@@ -730,13 +729,11 @@ function envlite_phase0_tool_version(array $cmd): ?array {
 }
 
 function envlite_phase0_required_extensions(): array {
-    // `gd` is required by the WordPress core test bootstrap:
-    // phpunit.xml.dist sets WP_RUN_CORE_TESTS=1, which makes
-    // tests/phpunit/includes/bootstrap.php abort if `gd` is missing
-    // before any group filter applies. Checking it at preflight stops
-    // envlite from claiming success while `phpunit --group html-api`
-    // still fails downstream.
-    $exts = ['gd', 'pdo_sqlite', 'sqlite3', 'openssl', 'simplexml', 'zip'];
+    // Extensions envlite itself depends on: pdo_sqlite/sqlite3 for the
+    // SQLite drop-in and the Phase 5 site install, openssl for the HTTPS
+    // fetches in Phases 2 and 4, zip for ZipArchive in Phase 2. Missing any
+    // of these means envlite cannot do its job → hard preflight failure.
+    $exts = ['pdo_sqlite', 'sqlite3', 'openssl', 'zip'];
     if (PHP_OS_FAMILY !== 'Windows') {
         // pcntl is required on Unix so envlite_run_dev_server can call
         // pcntl_exec into php -S. Windows lacks pcntl entirely; the
@@ -746,7 +743,25 @@ function envlite_phase0_required_extensions(): array {
     return $exts;
 }
 
-/** Runs all preflight checks. Calls envlite_log and exits 3 on first failure. */
+function envlite_phase0_recommended_extensions(): array {
+    // Extensions envlite does not use directly but a wordpress-develop dev
+    // workflow needs: `gd` for the WordPress core test bootstrap
+    // (phpunit.xml.dist sets WP_RUN_CORE_TESTS=1 and the bootstrap aborts
+    // without it before any group filter applies), `simplexml` for the
+    // PHPStan/PHPCS toolchain. Their absence is surfaced as a preflight
+    // warning, not a hard failure — running phpunit and the linters is the
+    // developer's responsibility, like installing dependencies and building
+    // assets.
+    return ['gd', 'simplexml'];
+}
+
+/**
+ * Runs all preflight checks. Exits 3 on the first hard failure (a condition
+ * envlite itself needs). Developer-responsibility tooling — node/npm/composer
+ * and the gd/simplexml extensions used by the build, tests, and linters that
+ * envlite no longer runs — is probed too, but only emits a warning and
+ * continues.
+ */
 function envlite_phase0_run(string $repoRoot): void {
     if (!envlite_phase0_is_wordpress_develop($repoRoot)) {
         envlite_log(null, "preflight: $repoRoot is not a wordpress-develop checkout");
@@ -762,22 +777,28 @@ function envlite_phase0_run(string $repoRoot): void {
             exit(3);
         }
     }
-    // Phase 5 (salts URL) and Phase 5 (plugin zip) fetch over HTTPS via
+    foreach (envlite_phase0_recommended_extensions() as $ext) {
+        if (!extension_loaded($ext)) {
+            envlite_log(null, "preflight: warning: recommended PHP extension missing: $ext (needed for phpunit/linting, which envlite leaves to you)");
+        }
+    }
+    // Phase 2 (plugin zip) and Phase 4 (salts URL) fetch over HTTPS via
     // PHP's URL stream wrappers. allow_url_fopen=0 makes those silently
-    // unavailable, and the failure surfaces only after npm/composer/build
-    // have run. Catch it up front so the user gets a one-line preflight
-    // error instead of a confusing mid-phase abort.
+    // unavailable, and the failure surfaces only later, mid-phase. Catch it
+    // up front so the user gets a one-line preflight error instead of a
+    // confusing mid-phase abort.
     if (!filter_var(ini_get('allow_url_fopen'), FILTER_VALIDATE_BOOLEAN)) {
-        envlite_log(null, 'preflight: PHP allow_url_fopen is disabled; required for HTTP fetches in Phase 5');
+        envlite_log(null, 'preflight: PHP allow_url_fopen is disabled; required for HTTP fetches in Phases 2 and 4');
         exit(3);
     }
-    // proc_open is the substrate for every subprocess envlite spawns
-    // (node/npm/composer/php). Hardened php.ini configurations sometimes
-    // list it in `disable_functions`; reaching it via the version probe
-    // below would emit a raw PHP error instead of the documented
-    // preflight exit 3.
+    // proc_open is the substrate for every subprocess envlite spawns: the
+    // Phase 5 `php` site-install subprocess, the Windows dev-server fallback,
+    // and the node/npm/composer version probes below. Hardened php.ini
+    // configurations sometimes list it in `disable_functions`; reaching it
+    // via the version probe below would emit a raw PHP error instead of the
+    // documented preflight exit 3.
     if (!function_exists('proc_open')) {
-        envlite_log(null, 'preflight: proc_open() is disabled; required to spawn node/npm/composer');
+        envlite_log(null, 'preflight: proc_open() is disabled; required to spawn the php site-install subprocess');
         exit(3);
     }
     // pcntl_exec is what envlite_run_dev_server calls on Unix to replace
@@ -791,6 +812,11 @@ function envlite_phase0_run(string $repoRoot): void {
         envlite_log(null, 'preflight: pcntl_exec() is disabled; required for the dev-server handoff on Unix');
         exit(3);
     }
+    // node/npm/composer are the developer's responsibility now that envlite
+    // no longer runs `npm ci`, `composer install`, or `npm run build:dev`.
+    // Probe them anyway and warn (never exit) so the developer is reminded
+    // they'll need a recent toolchain to install dependencies and build
+    // assets before the dev server can serve a working site.
     $tools = [
         ['node',     ['node', '--version'],     [20, 10, 0]],
         ['npm',      ['npm', '--version'],      [10, 2, 3]],
@@ -799,14 +825,13 @@ function envlite_phase0_run(string $repoRoot): void {
     foreach ($tools as [$name, $cmd, $min]) {
         $ver = envlite_phase0_tool_version($cmd);
         if ($ver === null) {
-            envlite_log(null, "preflight: $name not found or did not report a version");
-            exit(3);
+            envlite_log(null, "preflight: warning: $name not found; needed to install dependencies and build assets, which envlite leaves to you");
+            continue;
         }
         if (!envlite_phase0_version_ge($ver, $min)) {
             $vstr = implode('.', $ver);
             $mstr = implode('.', $min);
-            envlite_log(null, "preflight: $name $vstr is below the $mstr minimum");
-            exit(3);
+            envlite_log(null, "preflight: warning: $name $vstr is below the recommended $mstr minimum");
         }
     }
 }
@@ -884,415 +909,6 @@ function envlite_phase1_write_cache(string $repoRoot, int $port): void {
     envlite_manifest_save($repoRoot, $manifest);
 }
 
-function envlite_phase2_input_hash(string $repoRoot): ?string {
-    $path = "$repoRoot/package-lock.json";
-    if (!is_file($path)) { return null; }
-    return hash_file('sha256', $path);
-}
-
-function envlite_phase4_input_hash(string $repoRoot): ?string {
-    $path = "$repoRoot/composer.json";
-    if (!is_file($path)) { return null; }
-    // Mix the running PHP into the hash. wordpress-develop intentionally
-    // ships no composer.lock, so Composer resolves fresh on every install
-    // and can pick a different package set when the user switches PHP
-    // versions (different platform constraints in dependencies). Without
-    // this, swapping PHP and re-running `up` skips Phase 4 against a
-    // vendor/ tree resolved for the previous PHP — phpunit then fails
-    // against an incompatible autoload set.
-    return hash('sha256', PHP_VERSION . "\0" . file_get_contents($path));
-}
-
-/**
- * Run multiple subprocesses concurrently with per-process buffered output.
- *
- * @param array<string, array{cmd: array, cwd: ?string}> $jobs label => spec
- * @return array<string, array{exit: int, output: string}>
- */
-function envlite_run_parallel_buffered(array $jobs): array {
-    $procs = [];
-    $streamLabel = []; // (int) stream id => label
-    foreach ($jobs as $label => $spec) {
-        $proc = envlite_proc_open(
-            $spec['cmd'],
-            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-            $pipes,
-            $spec['cwd'] ?? null
-        );
-        if (!is_resource($proc)) {
-            foreach ($procs as $p) {
-                @proc_terminate($p['proc']);
-                @proc_close($p['proc']);
-            }
-            throw new \RuntimeException("failed to spawn $label");
-        }
-        fclose($pipes[0]);
-        stream_set_blocking($pipes[1], false);
-        stream_set_blocking($pipes[2], false);
-        $procs[$label] = [
-            'proc'   => $proc,
-            'stdout' => $pipes[1],
-            'stderr' => $pipes[2],
-            'buf'    => '',
-        ];
-        $streamLabel[(int) $pipes[1]] = $label;
-        $streamLabel[(int) $pipes[2]] = $label;
-    }
-
-    // PHP's stream_select() cannot observe proc_open() pipes on Windows
-    // (returns false unconditionally), so on Windows we poll the
-    // already-non-blocking pipes with a short sleep instead.
-    $isWindows = PHP_OS_FAMILY === 'Windows';
-
-    while (true) {
-        $read = [];
-        foreach ($procs as $p) {
-            if (is_resource($p['stdout'])) { $read[] = $p['stdout']; }
-            if (is_resource($p['stderr'])) { $read[] = $p['stderr']; }
-        }
-        if (empty($read)) { break; }
-
-        if ($isWindows) {
-            usleep(50_000);
-        } else {
-            $write = $except = null;
-            $n = @stream_select($read, $write, $except, 1);
-            if ($n === false) { continue; } // EINTR — retry
-            if ($n === 0)     { continue; } // timeout — retry
-        }
-
-        foreach ($read as $stream) {
-            $label = $streamLabel[(int) $stream] ?? null;
-            if ($label === null) { continue; }
-            $chunk = fread($stream, 8192);
-            if ($chunk !== false && $chunk !== '') {
-                $procs[$label]['buf'] .= $chunk;
-            }
-            if (feof($stream)) {
-                fclose($stream);
-                if ($procs[$label]['stdout'] === $stream) {
-                    $procs[$label]['stdout'] = null;
-                }
-                if ($procs[$label]['stderr'] === $stream) {
-                    $procs[$label]['stderr'] = null;
-                }
-            }
-        }
-    }
-
-    $result = [];
-    foreach ($procs as $label => $p) {
-        $result[$label] = [
-            'exit'   => proc_close($p['proc']),
-            'output' => $p['buf'],
-        ];
-    }
-    return $result;
-}
-
-/**
- * Format a subprocess failure dump: every job's buffer under a
- * `--- <label> ---` separator, with a trailing newline if the buffer
- * didn't end with one. Pure; called by envlite_phase24_parallel on
- * any failure and by envlite_phase3_build_dev for its single-job dump.
- *
- * @param array<string, array{exit:int, output:string}> $results
- */
-function envlite_format_subprocess_dump(array $results): string {
-    $out = '';
-    foreach ($results as $label => $r) {
-        $out .= "--- $label ---\n";
-        $out .= $r['output'];
-        if ($r['output'] === '' || substr($r['output'], -1) !== "\n") {
-            $out .= "\n";
-        }
-    }
-    return $out;
-}
-
-/**
- * Phases 2 and 4 — npm ci and composer install, in parallel.
- * Returns a record of which phases were skipped this run; the caller
- * (Phase 3) needs that to decide whether the build:dev sentinel + recorded
- * hashes are sufficient to skip itself.
- *
- * @return array{phase2_skipped: bool, phase4_skipped: bool}
- */
-function envlite_phase24_parallel(string $repoRoot, bool $rebuild): array {
-    $state = envlite_state_load($repoRoot);
-
-    $npmHash      = envlite_phase2_input_hash($repoRoot);
-    $composerHash = envlite_phase4_input_hash($repoRoot);
-
-    $phase2Skip = !$rebuild
-        && $npmHash !== null
-        && is_dir("$repoRoot/node_modules")
-        && ($state['phase2.input_hash'] ?? null) === $npmHash;
-    $phase4Skip = !$rebuild
-        && $composerHash !== null
-        && is_dir("$repoRoot/vendor")
-        && ($state['phase4.input_hash'] ?? null) === $composerHash;
-
-    if ($phase2Skip && $phase4Skip) {
-        return ['phase2_skipped' => true, 'phase4_skipped' => true];
-    }
-
-    $jobs = [];
-    if (!$phase2Skip) {
-        $jobs['npm ci'] = ['cmd' => ['npm', 'ci'], 'cwd' => $repoRoot];
-    }
-    if (!$phase4Skip) {
-        $jobs['composer install'] = [
-            'cmd' => ['composer', 'install', '--no-interaction', '--ignore-platform-req=ext-simplexml'],
-            'cwd' => $repoRoot,
-        ];
-    }
-
-    // Invalidate recorded hashes for any phase we're about to re-run.
-    // `npm ci` / `composer install` create the install directory first
-    // (or leave the previous one in place) and only later finish, so a
-    // mid-run failure can leave node_modules/vendor on disk paired with
-    // the still-matching old hash. The next `up` would then skip the
-    // broken install. Drop the hash up front so a subsequent run with
-    // unchanged inputs re-attempts the install.
-    if (!$phase2Skip || !$phase4Skip) {
-        if (!$phase2Skip) { unset($state['phase2.input_hash']); }
-        if (!$phase4Skip) { unset($state['phase4.input_hash']); }
-        envlite_state_save($repoRoot, $state);
-    }
-
-    fwrite(STDERR, "envlite up: installing dependencies\u{2026}\n");
-    $results = envlite_run_parallel_buffered($jobs);
-
-    $failed = [];
-    foreach ($results as $label => $r) {
-        if ($r['exit'] !== 0) { $failed[$label] = $r; }
-    }
-    if (!empty($failed)) {
-        // Spec: "On failure of either or both, envlite waits for both to
-        // complete, then dumps each captured buffer to stderr under labeled
-        // separators." The surviving partner's output often carries
-        // warnings/context relevant to the failure, so dump every job's
-        // buffer, not just the failed one(s).
-        fwrite(STDERR, envlite_format_subprocess_dump($results));
-        if (count($failed) === 1) {
-            $label = array_keys($failed)[0];
-            $phaseN = $label === 'npm ci' ? 2 : 4;
-            $exit = $failed[$label]['exit'];
-            throw new \RuntimeException("phase $phaseN: $label failed (exit $exit)");
-        }
-        throw new \RuntimeException('phases 2 and 4: install subprocesses failed');
-    }
-
-    // Record state for each phase that ran successfully.
-    if (!$phase2Skip) { $state['phase2.input_hash'] = $npmHash; }
-    if (!$phase4Skip) { $state['phase4.input_hash'] = $composerHash; }
-    envlite_state_save($repoRoot, $state);
-
-    return ['phase2_skipped' => $phase2Skip, 'phase4_skipped' => $phase4Skip];
-}
-
-/**
- * Phase 3 — npm run build:dev, serial after phases 2 & 4.
- * Skips when both deps phases skipped, sentinel exists, and recorded
- * hashes still match. `--no-build` forces skip; `--rebuild` forces run.
- *
- * Output is buffered, not streamed: build:dev prints hundreds of
- * webpack lines on every run, which drowns out envlite's own status
- * lines and is uninteresting on success. On failure, the captured
- * stdout+stderr is dumped under a `--- npm run build:dev ---`
- * separator (matching the phase 2/4 dump format) before the throw
- * surfaces as `envlite up: phase 3: ...`.
- */
-/**
- * Read the SHA the current HEAD points at, without shelling out to git.
- * Returns null when the repo isn't a git checkout, when HEAD is in a
- * shape we don't understand, or when the ref can't be resolved.
- *
- * Used as a Phase 3 cache key. The deps-hash + sentinel check on its
- * own can't tell that the user has run `git pull` or switched branches
- * to a tree where build inputs under `src/` changed but
- * `package-lock.json` and `composer.json` didn't — without this
- * fingerprint, Phase 3 would skip and leave stale build artifacts from
- * the previous source tree. The HEAD SHA changes on every commit/pull/
- * branch-switch in a wordpress-develop checkout, which is the common
- * vector for source changes; uncommitted edits in `src/` are still the
- * user's responsibility (use `--rebuild`).
- */
-function envlite_phase3_head_sha(string $repoRoot): ?string {
-    // Resolve the per-worktree git directory. In a plain checkout this
-    // is `$repoRoot/.git/`; in a linked worktree (`git worktree add ...`)
-    // `$repoRoot/.git` is a regular file containing `gitdir: <path>`
-    // where the worktree's per-tree HEAD/refs live (the object store and
-    // packed-refs still belong to the main repo, but HEAD is local). The
-    // round-22 implementation read `$repoRoot/.git/HEAD` directly and
-    // returned null on a linked worktree, which the skip rule then
-    // mapped to `null === null` and let Phase 3 skip across branch
-    // switches there — exactly the regression this helper was added to
-    // prevent.
-    $gitDir = envlite_phase3_resolve_git_dir($repoRoot);
-    if ($gitDir === null) { return null; }
-    $head = @file_get_contents($gitDir . '/HEAD');
-    if ($head === false) { return null; }
-    $head = trim($head);
-    if (preg_match('/^[0-9a-f]{40}$/', $head)) {
-        return $head; // detached HEAD
-    }
-    if (strpos($head, 'ref: ') !== 0) { return null; }
-    $ref = trim(substr($head, 5));
-    // Loose ref first — refs/heads/<branch> lives under the WORKTREE
-    // gitDir for a linked worktree (per-tree HEAD), but other refs
-    // (tags, remote-tracking) live under the COMMON gitdir. Try the
-    // worktree dir first, then walk up to the common dir if needed.
-    $commonDir = envlite_phase3_resolve_git_common_dir($gitDir);
-    foreach (array_unique([$gitDir, $commonDir]) as $dir) {
-        if ($dir === null) { continue; }
-        $refFile = $dir . '/' . $ref;
-        if (is_file($refFile)) {
-            $sha = trim(@file_get_contents($refFile) ?: '');
-            if (preg_match('/^[0-9a-f]{40}$/', $sha)) { return $sha; }
-        }
-    }
-    // Fallback: packed-refs lives only in the common gitdir.
-    if ($commonDir !== null) {
-        $packed = @file_get_contents($commonDir . '/packed-refs');
-        if ($packed !== false) {
-            foreach (explode("\n", $packed) as $line) {
-                $line = rtrim($line, "\r");
-                if ($line === '' || $line[0] === '#' || $line[0] === '^') { continue; }
-                if (preg_match('/^([0-9a-f]{40}) (.+)$/', $line, $m) && $m[2] === $ref) {
-                    return $m[1];
-                }
-            }
-        }
-    }
-    return null;
-}
-
-/**
- * Return the absolute path to the per-worktree git directory for a
- * checkout at $repoRoot, or null when the checkout isn't a git tree.
- *   - plain checkout:     `$repoRoot/.git/` (directory)
- *   - linked worktree:    `$repoRoot/.git` is a file
- *                          `gitdir: /path/to/main/.git/worktrees/<name>`
- *                          — return that target.
- */
-function envlite_phase3_resolve_git_dir(string $repoRoot): ?string {
-    $dotGit = $repoRoot . '/.git';
-    if (is_dir($dotGit) && !is_link($dotGit)) { return $dotGit; }
-    if (is_file($dotGit)) {
-        $contents = @file_get_contents($dotGit);
-        if ($contents === false) { return null; }
-        if (preg_match('/^gitdir:\s*(.+)$/m', $contents, $m)) {
-            $target = trim($m[1]);
-            // Relative paths in `gitdir:` are resolved against the
-            // location of the `.git` file (the worktree root).
-            if ($target !== '' && $target[0] !== '/' && !preg_match('/^[A-Za-z]:/', $target)) {
-                $target = $repoRoot . '/' . $target;
-            }
-            return rtrim($target, '/\\');
-        }
-    }
-    return null;
-}
-
-/**
- * Resolve the *common* git directory (the main repo's .git) given a
- * per-worktree git dir. For a plain checkout this is the same path;
- * for a linked worktree it's read from `commondir` (a file inside the
- * worktree's gitdir containing the path to the main .git, absolute or
- * relative to the worktree gitdir).
- */
-function envlite_phase3_resolve_git_common_dir(string $gitDir): ?string {
-    $commonFile = $gitDir . '/commondir';
-    if (!is_file($commonFile)) {
-        // Plain checkout: the common dir IS the per-worktree dir.
-        return $gitDir;
-    }
-    $target = trim(@file_get_contents($commonFile) ?: '');
-    if ($target === '') { return null; }
-    if ($target[0] !== '/' && !preg_match('/^[A-Za-z]:/', $target)) {
-        $target = $gitDir . '/' . $target;
-    }
-    return rtrim($target, '/\\');
-}
-
-function envlite_phase3_build_dev(
-    string $repoRoot,
-    bool $rebuild,
-    bool $noBuild,
-    bool $phase2Skipped,
-    bool $phase4Skipped
-): void {
-    if ($noBuild) { return; }
-
-    // Sentinel: build:dev produces files under src/wp-includes/js/dist
-    // (Gutenberg copy in --dev mode). The entire src/wp-includes/js path
-    // is gitignored, so a fresh checkout has nothing there; existence is a
-    // reliable proxy for "build:dev has produced output". A tracked source
-    // file (e.g. src/wp-includes/version.php) would not work — it is in
-    // every clean checkout and gives a false positive after the user
-    // removes ignored build artifacts.
-    $sentinel    = "$repoRoot/src/wp-includes/js/dist";
-    $npmHash     = envlite_phase2_input_hash($repoRoot);
-    $composerHash = envlite_phase4_input_hash($repoRoot);
-    $headSha     = envlite_phase3_head_sha($repoRoot);
-    $state       = envlite_state_load($repoRoot);
-
-    // Skip rule has three hash/identity components: package-lock,
-    // composer.json, and the HEAD SHA capture from git so a branch
-    // switch or `git pull` that changes src/ inputs without changing
-    // the lockfiles still rebuilds. Each component compares the
-    // current value against the value recorded on the last successful
-    // build; null === null is allowed so a non-git checkout still
-    // gets the skip on identical re-runs.
-    $skip = !$rebuild
-        && $phase2Skipped
-        && $phase4Skipped
-        && is_dir($sentinel)
-        && $npmHash !== null && $composerHash !== null
-        && ($state['phase3.recorded_npm_hash'] ?? null)      === $npmHash
-        && ($state['phase3.recorded_composer_hash'] ?? null) === $composerHash
-        && ($state['phase3.recorded_head_sha'] ?? null)      === $headSha;
-    if ($skip) { return; }
-
-    // Invalidate recorded hashes before attempting the build. `build:dev`
-    // writes incrementally into src/wp-includes/{js,css,blocks}, so a
-    // partial run can leave the sentinel directory in place. If the
-    // recorded hashes still matched, the next `up` would skip Phase 3
-    // even though the last build attempt failed. Drop them up front;
-    // re-record only on a successful build.
-    unset(
-        $state['phase3.recorded_npm_hash'],
-        $state['phase3.recorded_composer_hash'],
-        $state['phase3.recorded_head_sha']
-    );
-    envlite_state_save($repoRoot, $state);
-
-    fwrite(STDERR, "envlite up: building assets\u{2026}\n");
-    [$exit, $stdout, $stderr] = envlite_proc_capture(['npm', 'run', 'build:dev'], $repoRoot);
-    if ($exit !== 0) {
-        // proc_capture returns stdout and stderr separately because it
-        // drains the pipes concurrently to avoid pipe-buffer deadlocks;
-        // chronological interleaving is therefore lost. Concatenate them
-        // for the dump — webpack errors land on stderr, informational
-        // lines on stdout, and both are useful for diagnosis.
-        fwrite(STDERR, envlite_format_subprocess_dump([
-            'npm run build:dev' => ['exit' => $exit, 'output' => $stdout . $stderr],
-        ]));
-        throw new \RuntimeException("phase 3: npm run build:dev failed (exit $exit)");
-    }
-
-    if ($npmHash !== null)      { $state['phase3.recorded_npm_hash']      = $npmHash; }
-    if ($composerHash !== null) { $state['phase3.recorded_composer_hash'] = $composerHash; }
-    // Skip writing the HEAD entry when there's no git repo to fingerprint
-    // — the skip check uses null === null on the absent-side path.
-    // Writing an empty string would later miscompare against current
-    // null and force a needless rebuild.
-    if ($headSha !== null)      { $state['phase3.recorded_head_sha']      = $headSha; }
-    envlite_state_save($repoRoot, $state);
-}
-
 // Versioned (immutable) URL. The unsuffixed
 // .../sqlite-database-integration.zip URL points to whatever wordpress.org
 // publishes as latest, so its SHA256 changes on every plugin release —
@@ -1324,14 +940,14 @@ function envlite_http_get(string $url, int $timeoutSeconds = 30): string {
     return $bytes;
 }
 
-function envlite_phase5_verify_sha256(string $path, string $expected): void {
+function envlite_phase2_verify_sha256(string $path, string $expected): void {
     $actual = hash_file('sha256', $path);
     if ($actual !== $expected) {
         throw new \RuntimeException("SHA256 mismatch on $path: expected $expected, got $actual");
     }
 }
 
-function envlite_phase5_assert_placeholder(string $dbCopyPath): void {
+function envlite_phase2_assert_placeholder(string $dbCopyPath): void {
     $bytes = @file_get_contents($dbCopyPath);
     if ($bytes === false || strpos($bytes, ENVLITE_SQLITE_PLACEHOLDER) === false) {
         throw new \RuntimeException(
@@ -1342,7 +958,7 @@ function envlite_phase5_assert_placeholder(string $dbCopyPath): void {
 
 /**
  * Stage the downloaded plugin zip in a temp directory and return the
- * full path. Throws RuntimeException (with the `phase 5:` prefix) on
+ * full path. Throws RuntimeException (with the `phase 2:` prefix) on
  * write failure — an unwritable temp directory or a full disk that
  * would otherwise yield a misleading SHA256 mismatch on garbage or a
  * short write that quietly passes verification by accident.
@@ -1351,20 +967,20 @@ function envlite_phase5_assert_placeholder(string $dbCopyPath): void {
  * with a caller-supplied $tmpDir; production callers pass
  * sys_get_temp_dir().
  */
-function envlite_phase5_stage_temp_zip(string $tmpDir, string $bytes): string {
+function envlite_phase2_stage_temp_zip(string $tmpDir, string $bytes): string {
     $tmpZip = rtrim($tmpDir, '/\\') . '/envlite-sqlite-' . bin2hex(random_bytes(4)) . '.zip';
     $written = @file_put_contents($tmpZip, $bytes);
     if ($written === false || $written !== strlen($bytes)) {
         $detail = $written === false
             ? 'open failed'
             : 'short write (' . $written . '/' . strlen($bytes) . ')';
-        throw new \RuntimeException("phase 5: temp-zip write to $tmpZip failed: $detail");
+        throw new \RuntimeException("phase 2: temp-zip write to $tmpZip failed: $detail");
     }
     return $tmpZip;
 }
 
 /**
- * Capture a stable identity for the Phase 5 plugin path so a
+ * Capture a stable identity for the Phase 2 plugin path so a
  * before/after comparison can detect any change — including a
  * same-shape swap (e.g. one real directory replaced by another).
  * Returns null when nothing exists at the path; otherwise a string
@@ -1376,7 +992,7 @@ function envlite_phase5_stage_temp_zip(string $tmpDir, string $bytes): string {
  *
  * @return string|null `<ino>:<dev>` for an existing entry, `null` if absent
  */
-function envlite_phase5_path_signature(string $path): ?string {
+function envlite_phase2_path_signature(string $path): ?string {
     $stat = @lstat($path);
     if ($stat === false || !is_array($stat)) { return null; }
     $ino = $stat['ino'] ?? $stat[1] ?? 0;
@@ -1385,8 +1001,8 @@ function envlite_phase5_path_signature(string $path): ?string {
 }
 
 /**
- * Run the at-commit-point part of Phase 5: TOCTOU re-check, clear,
- * extract. Separated from envlite_phase5_install so the guard is
+ * Run the at-commit-point part of Phase 2: TOCTOU re-check, clear,
+ * extract. Separated from envlite_phase2_install so the guard is
  * unit-testable with a caller-supplied ZipArchive instead of having
  * to fetch + SHA-verify against the live wordpress.org pin.
  *
@@ -1399,12 +1015,12 @@ function envlite_phase5_path_signature(string $path): ?string {
  *     archive is released before the temp zip is unlinked — important
  *     on Windows where an open archive locks the file.)
  *
- * Throws RuntimeException with the `phase 5:` prefix on either failure
+ * Throws RuntimeException with the `phase 2:` prefix on either failure
  * mode (identity changed, extractTo failed). Both throws happen before
  * any subsequent caller-side state writes — manifest_save / state_save
  * run only after this returns cleanly.
  */
-function envlite_phase5_apply_extract(
+function envlite_phase2_apply_extract(
     string $repoRoot,
     string $pluginDir,
     ?string $initialSignature,
@@ -1414,27 +1030,27 @@ function envlite_phase5_apply_extract(
     // against the specific entry present at the initial scan; any
     // create/remove/swap during the fetch window invalidates that
     // consent.
-    $currentSignature = envlite_phase5_path_signature($pluginDir);
+    $currentSignature = envlite_phase2_path_signature($pluginDir);
     if ($currentSignature !== $initialSignature) {
         throw new \RuntimeException(
-            "phase 5: plugin path $pluginDir changed identity during fetch; refusing to overwrite without re-prompt"
+            "phase 2: plugin path $pluginDir changed identity during fetch; refusing to overwrite without re-prompt"
         );
     }
     // Strict pre-extract clear of any entry at the plugin path. The
     // helper re-stats after each removal to defend against silent
     // @unlink/rrmdir failure and TOCTOU.
-    envlite_phase5_clear_plugin_blocker($pluginDir);
+    envlite_phase2_clear_plugin_blocker($pluginDir);
     // extractTo returns false on partial/failed extraction. Throwing
     // here means no subsequent state writes (manifest/state) record
     // the broken tree.
     $extracted = $zip->extractTo("$repoRoot/src/wp-content/plugins/");
     if ($extracted !== true) {
-        throw new \RuntimeException("phase 5: ZipArchive::extractTo failed for $pluginDir");
+        throw new \RuntimeException("phase 2: ZipArchive::extractTo failed for $pluginDir");
     }
 }
 
 /**
- * Strict pre-extract cleanup for the Phase 5 plugin path. The caller
+ * Strict pre-extract cleanup for the Phase 2 plugin path. The caller
  * holds the user's consent (prompt approved or --force); this function
  * makes sure the path is **empty** before extractTo runs:
  *
@@ -1457,10 +1073,10 @@ function envlite_phase5_apply_extract(
  * Re-stats AFTER each clearing attempt: a `@unlink` or rrmdir can fail
  * silently on permissions/RO mounts, and a TOCTOU race could swap an
  * entry between the caller's initial scan and now. If anything still
- * sits at the path, throw with the `phase 5:` prefix — extractTo
+ * sits at the path, throw with the `phase 2:` prefix — extractTo
  * cannot proceed safely.
  */
-function envlite_phase5_clear_plugin_blocker(string $pluginDir): void {
+function envlite_phase2_clear_plugin_blocker(string $pluginDir): void {
     if (is_link($pluginDir)) {
         @unlink($pluginDir);
     } elseif (is_dir($pluginDir)) {
@@ -1474,13 +1090,13 @@ function envlite_phase5_clear_plugin_blocker(string $pluginDir): void {
     }
     if (file_exists($pluginDir) || is_link($pluginDir)) {
         throw new \RuntimeException(
-            "phase 5: could not clear $pluginDir before extract; refusing to extract"
+            "phase 2: could not clear $pluginDir before extract; refusing to extract"
         );
     }
 }
 
 /**
- * Drop the phase 5 pin SHA from state before re-entering the
+ * Drop the phase 2 pin SHA from state before re-entering the
  * download/extract path. Idempotent — no-op when the pin isn't recorded.
  *
  * Why this exists: extractTo writes the plugin tree incrementally and
@@ -1490,19 +1106,18 @@ function envlite_phase5_clear_plugin_blocker(string $pluginDir): void {
  * would then skip the re-download and run against a partial plugin
  * tree. Invalidating the pin up front and only re-recording on a
  * successful extract guarantees the next `up` re-attempts after any
- * failure, matching the npm/composer/build phases' pattern.
+ * failure.
  */
-function envlite_phase5_drop_recorded_pin(string $repoRoot): void {
+function envlite_phase2_drop_recorded_pin(string $repoRoot): void {
     $state = envlite_state_load($repoRoot);
-    if (!isset($state['phase5.recorded_pin_sha'])) { return; }
-    unset($state['phase5.recorded_pin_sha']);
+    if (!isset($state['phase2.recorded_pin_sha'])) { return; }
+    unset($state['phase2.recorded_pin_sha']);
     envlite_state_save($repoRoot, $state);
 }
 
-function envlite_phase5_install(
+function envlite_phase2_install(
     string $repoRoot,
     bool $force,
-    bool $rebuild = false,
     ?callable $fetcher = null
 ): void {
     // $fetcher is dependency-injected so tests can exercise pre-extract
@@ -1522,17 +1137,17 @@ function envlite_phase5_install(
     // Step 1: skip download/extract if (a) plugin path is a REAL directory
     // (not a symlink or any other non-dir entry) recorded in the manifest,
     // (b) db.copy is present, AND (c) the recorded pin SHA matches the
-    // current code literal. --rebuild bypasses the skip. envlite only ever
-    // writes a real directory at the plugin path; anything else there is
-    // external modification and must not satisfy the skip predicate.
+    // current code literal. envlite only ever writes a real directory at the
+    // plugin path; anything else there is external modification and must not
+    // satisfy the skip predicate. To force a re-download, bump the SHA pin or
+    // run `clean` then `up`.
     $pluginIsLink = is_link($pluginDir);
     $pluginIsRealDir = is_dir($pluginDir) && !$pluginIsLink;
     // Capture a stable identity for the TOCTOU re-check before the
     // clear pass (see comment around the re-stat assertion below).
-    $initialSignature = envlite_phase5_path_signature($pluginDir);
-    $pinMatches = ($state['phase5.recorded_pin_sha'] ?? null) === ENVLITE_SQLITE_PLUGIN_SHA256;
-    $alreadyInstalled = !$rebuild
-        && $pluginIsRealDir
+    $initialSignature = envlite_phase2_path_signature($pluginDir);
+    $pinMatches = ($state['phase2.recorded_pin_sha'] ?? null) === ENVLITE_SQLITE_PLUGIN_SHA256;
+    $alreadyInstalled = $pluginIsRealDir
         && isset($manifest[$pluginRel])
         && $manifest[$pluginRel] === 'dir'
         && is_file($dbCopy)
@@ -1551,9 +1166,9 @@ function envlite_phase5_install(
             envlite_prompt_or_abort($force, 'up', 'overwrite plugin tree', $pluginRel, null, null);
         }
         $bytes = $fetcher();
-        $tmpZip = envlite_phase5_stage_temp_zip(sys_get_temp_dir(), $bytes);
+        $tmpZip = envlite_phase2_stage_temp_zip(sys_get_temp_dir(), $bytes);
         try {
-            envlite_phase5_verify_sha256($tmpZip, ENVLITE_SQLITE_PLUGIN_SHA256);
+            envlite_phase2_verify_sha256($tmpZip, ENVLITE_SQLITE_PLUGIN_SHA256);
             $zip = new \ZipArchive();
             if ($zip->open($tmpZip) !== true) {
                 throw new \RuntimeException("ZipArchive::open failed: $tmpZip");
@@ -1565,13 +1180,13 @@ function envlite_phase5_install(
                 // the existing plugin tree was never modified (offline
                 // re-run, transient HTTP failure, SHA mismatch on a
                 // partial download).
-                envlite_phase5_drop_recorded_pin($repoRoot);
-                unset($state['phase5.recorded_pin_sha']);
+                envlite_phase2_drop_recorded_pin($repoRoot);
+                unset($state['phase2.recorded_pin_sha']);
                 // TOCTOU re-check + clear + extract is delegated to a
                 // helper so the guard is unit-testable without going
                 // through the live wordpress.org fetch. See
-                // envlite_phase5_apply_extract() for the full contract.
-                envlite_phase5_apply_extract($repoRoot, $pluginDir, $initialSignature, $zip);
+                // envlite_phase2_apply_extract() for the full contract.
+                envlite_phase2_apply_extract($repoRoot, $pluginDir, $initialSignature, $zip);
             } finally {
                 // Always close the archive before the outer finally
                 // unlinks the temp zip. On Windows an open archive locks
@@ -1587,17 +1202,17 @@ function envlite_phase5_install(
 
         // Record the pin SHA so a subsequent code-level pin bump
         // re-triggers download/extract automatically.
-        $state['phase5.recorded_pin_sha'] = ENVLITE_SQLITE_PLUGIN_SHA256;
+        $state['phase2.recorded_pin_sha'] = ENVLITE_SQLITE_PLUGIN_SHA256;
         envlite_state_save($repoRoot, $state);
     }
 
     // Step 5: copy db.copy → db.php with manifest contract.
     if (!is_file($dbCopy)) {
-        throw new \RuntimeException("phase 5: db.copy missing at $dbCopy after extraction");
+        throw new \RuntimeException("phase 2: db.copy missing at $dbCopy after extraction");
     }
     $dbBytes = @file_get_contents($dbCopy);
     if ($dbBytes === false) {
-        throw new \RuntimeException("phase 5: cannot read $dbCopy");
+        throw new \RuntimeException("phase 2: cannot read $dbCopy");
     }
     $dbPhpAbs = "$repoRoot/$dbPhpRel";
     [$exists, $current] = envlite_path_inspect($dbPhpAbs);
@@ -1614,10 +1229,10 @@ function envlite_phase5_install(
     envlite_manifest_save($repoRoot, $manifest);
 
     // Step 6: tripwire.
-    envlite_phase5_assert_placeholder($dbCopy);
+    envlite_phase2_assert_placeholder($dbCopy);
 }
 
-function envlite_phase6_render(string $sample, string $phpBinary = PHP_BINARY): string {
+function envlite_phase3_render(string $sample, string $phpBinary = PHP_BINARY): string {
     $replacements = [
         'youremptytestdbnamehere' => 'wordpress_test',
         'yourusernamehere'        => 'wp',
@@ -1625,13 +1240,13 @@ function envlite_phase6_render(string $sample, string $phpBinary = PHP_BINARY): 
     ];
     foreach ($replacements as $placeholder => $value) {
         if (substr_count($sample, $placeholder) !== 1) {
-            throw new \RuntimeException("phase 6: placeholder '$placeholder' must appear exactly once");
+            throw new \RuntimeException("phase 3: placeholder '$placeholder' must appear exactly once");
         }
     }
     $out = strtr($sample, $replacements);
     foreach (array_keys($replacements) as $placeholder) {
         if (strpos($out, $placeholder) !== false) {
-            throw new \RuntimeException("phase 6: placeholder '$placeholder' still present after substitution");
+            throw new \RuntimeException("phase 3: placeholder '$placeholder' still present after substitution");
         }
     }
 
@@ -1644,7 +1259,7 @@ function envlite_phase6_render(string $sample, string $phpBinary = PHP_BINARY): 
     $samplePhpBinary = "define( 'WP_PHP_BINARY', 'php' );";
     if (substr_count($out, $samplePhpBinary) !== 1) {
         throw new \RuntimeException(
-            "phase 6: WP_PHP_BINARY sample literal not found exactly once; envlite assumption broken"
+            "phase 3: WP_PHP_BINARY sample literal not found exactly once; envlite assumption broken"
         );
     }
     // PHPUnit's bootstrap builds the install command as
@@ -1662,7 +1277,7 @@ function envlite_phase6_render(string $sample, string $phpBinary = PHP_BINARY): 
 
     if (preg_match("/define\\s*\\(\\s*['\"]DB_FILE['\"]/", $out)) {
         throw new \RuntimeException(
-            "phase 6: DB_FILE already defined in wp-tests-config-sample.php; envlite assumption broken"
+            "phase 3: DB_FILE already defined in wp-tests-config-sample.php; envlite assumption broken"
         );
     }
     if (substr($out, -1) !== "\n") {
@@ -1672,16 +1287,16 @@ function envlite_phase6_render(string $sample, string $phpBinary = PHP_BINARY): 
     return $out;
 }
 
-function envlite_phase6_install(string $repoRoot, bool $force): void {
+function envlite_phase3_install(string $repoRoot, bool $force): void {
     $samplePath = "$repoRoot/wp-tests-config-sample.php";
     $outRel = 'wp-tests-config.php';
     $outAbs = "$repoRoot/$outRel";
 
     $sample = @file_get_contents($samplePath);
     if ($sample === false) {
-        throw new \RuntimeException("phase 6: cannot read $samplePath");
+        throw new \RuntimeException("phase 3: cannot read $samplePath");
     }
-    $rendered = envlite_phase6_render($sample);
+    $rendered = envlite_phase3_render($sample);
 
     $manifest = envlite_manifest_load($repoRoot);
     [$exists, $current] = envlite_path_inspect($outAbs);
@@ -1699,7 +1314,7 @@ function envlite_phase6_install(string $repoRoot, bool $force): void {
 
 const ENVLITE_SALT_URL = 'https://api.wordpress.org/secret-key/1.1/salt/';
 
-function envlite_phase7_render(string $sample, int $port, ?string $saltsBlock): string {
+function envlite_phase4_render(string $sample, int $port, ?string $saltsBlock): string {
     // wp-config-sample.php ships with CRLF line endings in tree. envlite
     // injects LF-only lines (WP_HOME/WP_SITEURL, the salts block); without
     // normalization the rendered output would be a mix of CRLF and LF, which
@@ -1716,7 +1331,7 @@ function envlite_phase7_render(string $sample, int $port, ?string $saltsBlock): 
     ];
     foreach ($dbReplacements as $placeholder => $value) {
         if (substr_count($sample, $placeholder) !== 1) {
-            throw new \RuntimeException("phase 7: placeholder '$placeholder' must appear exactly once");
+            throw new \RuntimeException("phase 4: placeholder '$placeholder' must appear exactly once");
         }
     }
     $cfg = strtr($sample, $dbReplacements);
@@ -1747,7 +1362,7 @@ function envlite_phase7_render(string $sample, int $port, ?string $saltsBlock): 
         $count = preg_match_all($pattern, $cfg, $m);
         if ($count !== 1) {
             throw new \RuntimeException(
-                "phase 7: expected exactly one contiguous AUTH_KEY..NONCE_SALT block, found $count"
+                "phase 4: expected exactly one contiguous AUTH_KEY..NONCE_SALT block, found $count"
                 . " (upstream sample may have inserted content between the salt defines)"
             );
         }
@@ -1762,7 +1377,7 @@ function envlite_phase7_render(string $sample, int $port, ?string $saltsBlock): 
     // 3. Inject WP_HOME / WP_SITEURL before the marker.
     $marker = "/* That's all, stop editing! Happy publishing. */";
     if (substr_count($cfg, $marker) !== 1) {
-        throw new \RuntimeException("phase 7: expected exactly one marker line");
+        throw new \RuntimeException("phase 4: expected exactly one marker line");
     }
     $inject = "define( 'WP_HOME',    'http://127.0.0.1:$port' );\n"
             . "define( 'WP_SITEURL', 'http://127.0.0.1:$port' );\n\n";
@@ -1770,7 +1385,7 @@ function envlite_phase7_render(string $sample, int $port, ?string $saltsBlock): 
     return substr($cfg, 0, $pos) . $inject . substr($cfg, $pos);
 }
 
-function envlite_phase7_fetch_salts(): ?string {
+function envlite_phase4_fetch_salts(): ?string {
     try {
         $bytes = envlite_http_get(ENVLITE_SALT_URL, 5);
         // Sanity: must contain 8 define() lines and the keys we care about.
@@ -1779,22 +1394,22 @@ function envlite_phase7_fetch_salts(): ?string {
         }
         return rtrim($bytes, "\n");
     } catch (\Throwable $e) {
-        envlite_log('up', "phase 7: salt fetch failed: " . $e->getMessage() . " (continuing with sample placeholders)");
+        envlite_log('up', "phase 4: salt fetch failed: " . $e->getMessage() . " (continuing with sample placeholders)");
         return null;
     }
 }
 
-function envlite_phase7_install(string $repoRoot, int $port, bool $force): void {
+function envlite_phase4_install(string $repoRoot, int $port, bool $force): void {
     $samplePath = "$repoRoot/wp-config-sample.php";
     $outRel = 'src/wp-config.php';
     $outAbs = "$repoRoot/$outRel";
 
     $sample = @file_get_contents($samplePath);
     if ($sample === false) {
-        throw new \RuntimeException("phase 7: cannot read $samplePath");
+        throw new \RuntimeException("phase 4: cannot read $samplePath");
     }
-    $salts  = envlite_phase7_fetch_salts();
-    $rendered = envlite_phase7_render($sample, $port, $salts);
+    $salts  = envlite_phase4_fetch_salts();
+    $rendered = envlite_phase4_render($sample, $port, $salts);
 
     $manifest = envlite_manifest_load($repoRoot);
     [$exists, $current] = envlite_path_inspect($outAbs);
@@ -1811,7 +1426,7 @@ function envlite_phase7_install(string $repoRoot, int $port, bool $force): void 
 }
 
 /**
- * Phase 8 — bootstrap WP and run wp_install if not already installed.
+ * Phase 5 — bootstrap WP and run wp_install if not already installed.
  *
  * Runs in a fresh `php` subprocess. The script is piped via stdin (no
  * second committed asset to ship alongside router.php). Subprocess
@@ -1819,13 +1434,13 @@ function envlite_phase7_install(string $repoRoot, int $port, bool $force): void 
  * autoloaders, shutdown handlers, wp_die) from corrupting envlite's
  * own process or its exit semantics.
  */
-function envlite_phase8_install_site(string $repoRoot, int $port): void {
+function envlite_phase5_install_site(string $repoRoot, int $port): void {
     // Nowdoc — no $variable expansion in the template; values are
     // substituted via strtr() with var_export()'d literals so a path
     // with quotes/spaces can't break the script.
     $tmpl = <<<'PHP'
 <?php
-// envlite Phase 8 — site install. Loaded into a fresh `php` process via stdin.
+// envlite Phase 5 — site install. Loaded into a fresh `php` process via stdin.
 $repo_root = __REPO_ROOT__;
 $port      = __PORT__;
 
@@ -1914,13 +1529,9 @@ function envlite_main(array $argv): int {
 
 function envlite_cmd_up(array $args, bool $force): int {
     $port = null;
-    $noBuild = false;
     $noServe = false;
-    $rebuild = false;
     foreach ($args as $a) {
-        if ($a === '--no-build') { $noBuild = true; continue; }
         if ($a === '--no-serve') { $noServe = true; continue; }
-        if ($a === '--rebuild')  { $rebuild = true; continue; }
         if (preg_match('/^--port=(\d+)$/', $a, $m)) {
             $port = (int) $m[1];
             if ($port < 1 || $port > 65535) {
@@ -1969,42 +1580,23 @@ function envlite_cmd_up(array $args, bool $force): int {
         return 1;
     }
 
-    // Phases 2 & 4 in parallel (composer install || npm ci), with skip+record.
-    // Pass a string label here — the spec has no "phase 24"; the parallel
-    // pair maps to phases 2 and 4. envlite_phase24_parallel's own throws
-    // already carry `phase 2: ...` / `phase 4: ...` / `phases 2 and 4: ...`
-    // prefixes; this label only kicks in for unprefixed throws (proc_open
-    // spawn failure, state-file write failure before the jobs start).
-    $phase24 = ['phase2_skipped' => false, 'phase4_skipped' => false];
-    $rc = envlite_phase_guard('up', 'phases 2 and 4', function () use ($repoRoot, $rebuild, &$phase24) {
-        $phase24 = envlite_phase24_parallel($repoRoot, $rebuild);
-    });
-    if ($rc !== 0) { return $rc; }
-
-    // Phase 3 (build:dev), serial after the parallel pair.
-    $rc = envlite_phase_guard('up', 3, function () use ($repoRoot, $rebuild, $noBuild, $phase24) {
-        envlite_phase3_build_dev(
-            $repoRoot,
-            $rebuild,
-            $noBuild,
-            $phase24['phase2_skipped'],
-            $phase24['phase4_skipped']
-        );
-    });
-    if ($rc !== 0) { return $rc; }
-
+    // Phases 2–5: SQLite drop-in, phpunit config, runtime config, site
+    // install. envlite no longer installs npm/composer dependencies or runs
+    // the asset build — those are the developer's responsibility and must be
+    // done (`npm ci && composer install && npm run build:dev`, or
+    // equivalent) before the dev server can serve a working site.
     $phases = [
-        [5, function () use ($repoRoot, $force, $rebuild) { envlite_phase5_install($repoRoot, $force, $rebuild); }],
-        [6, function () use ($repoRoot, $force) { envlite_phase6_install($repoRoot, $force); }],
-        [7, function () use ($repoRoot, $resolvedPort, $force) { envlite_phase7_install($repoRoot, $resolvedPort, $force); }],
-        [8, function () use ($repoRoot, $resolvedPort) { envlite_phase8_install_site($repoRoot, $resolvedPort); }],
+        [2, function () use ($repoRoot, $force) { envlite_phase2_install($repoRoot, $force); }],
+        [3, function () use ($repoRoot, $force) { envlite_phase3_install($repoRoot, $force); }],
+        [4, function () use ($repoRoot, $resolvedPort, $force) { envlite_phase4_install($repoRoot, $resolvedPort, $force); }],
+        [5, function () use ($repoRoot, $resolvedPort) { envlite_phase5_install_site($repoRoot, $resolvedPort); }],
     ];
     foreach ($phases as [$n, $fn]) {
         $rc = envlite_phase_guard('up', $n, $fn);
         if ($rc !== 0) { return $rc; }
     }
 
-    // Re-observe `.ht.sqlite` now that Phase 8 has triggered its creation.
+    // Re-observe `.ht.sqlite` now that Phase 5 has triggered its creation.
     // On a fresh checkout the DB didn't exist at the start-of-up observation
     // point, so the manifest didn't yet record it. The spec's final-state
     // contract requires the live DB to be envlite-tracked content after a
@@ -2014,7 +1606,7 @@ function envlite_cmd_up(array $args, bool $force): int {
     try {
         envlite_observe_ht_sqlite($repoRoot, true);
     } catch (\Throwable $e) {
-        envlite_log('up', 'observe .ht.sqlite (post-phase-8): ' . $e->getMessage());
+        envlite_log('up', 'observe .ht.sqlite (post-install): ' . $e->getMessage());
         return 1;
     }
 
@@ -2037,30 +1629,23 @@ function envlite_cmd_up(array $args, bool $force): int {
 
 /**
  * Wrap a phase's execution in a single try/catch that turns any throw
- * into the documented one-line `envlite <sub>: <prefix>: <message>` form
+ * into the documented one-line `envlite <sub>: phase <n>: <message>` form
  * plus exit code 1.
  *
- * @param int|string $label Phase label. An int produces "phase <n>:";
- *                          a string is used verbatim as the prefix (e.g.
- *                          "phases 2 and 4" for the parallel install pair,
- *                          which has no single phase number in the spec).
- *                          The label is dropped when the thrown message
- *                          already starts with `phase`/`phases`, so inner
- *                          code that names its own phase wins.
+ * The `phase <n>:` prefix is dropped when the thrown message already starts
+ * with `phase <n>:`, so inner code that names its own phase wins.
  */
-function envlite_phase_guard(string $sub, $label, callable $fn): int {
+function envlite_phase_guard(string $sub, int $label, callable $fn): int {
     try {
         $fn();
         return 0;
     } catch (\Throwable $e) {
         $msg = $e->getMessage();
-        // If the exception message already starts with "phase N:" or
-        // "phases N and M:" — i.e. the inner code already named its phase —
-        // pass it through unchanged. Otherwise prepend the caller-supplied
-        // label.
-        if (!preg_match('/^phases? \d/', $msg)) {
-            $prefix = is_int($label) ? "phase $label" : (string) $label;
-            $msg = "$prefix: $msg";
+        // If the exception message already starts with "phase N:" — i.e. the
+        // inner code already named its phase — pass it through unchanged.
+        // Otherwise prepend the caller-supplied label.
+        if (!preg_match('/^phase \d/', $msg)) {
+            $msg = "phase $label: $msg";
         }
         envlite_log($sub, $msg);
         return 1;
