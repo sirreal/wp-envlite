@@ -32,7 +32,7 @@ Open the URL it prints; log in at `/wp-login.php` with `admin` /
 
 envlite does **not** install dependencies or build assets — run
 `npm ci && composer install && npm run build:dev` (or your usual
-equivalent) yourself before the served site or phpunit will work.
+equivalent) yourself before running phpunit and to ensure the served site has built assets (e.g. the editor).
 envlite's own first run needs network access only to download the
 pinned SQLite drop-in plugin; subsequent runs are offline.
 

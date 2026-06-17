@@ -14,9 +14,9 @@ function envlite_help_text(): string {
 		  up [--port=N] [--no-serve]
 		      Set up the checkout and start the dev server: writes config,
 		      installs the SQLite drop-in, runs wp_install() if needed, then
-		      launches `php -S`. Does NOT install npm/composer deps or build
-		      assets — run those yourself (npm ci && composer install &&
-		      npm run build:dev) before the site can load. After install,
+			      launches `php -S`. Does NOT install npm/composer deps or build
+			      assets — run those yourself (npm ci && composer install &&
+			      npm run build:dev) to run phpunit and ensure the served site has built assets. After install,
 		      sign in at /wp-login.php with admin / password.
 
 		  clean
@@ -798,7 +798,7 @@ function envlite_phase0_run(string $repoRoot): void {
     // via the version probe below would emit a raw PHP error instead of the
     // documented preflight exit 3.
     if (!function_exists('proc_open')) {
-        envlite_log(null, 'preflight: proc_open() is disabled; required to spawn the php site-install subprocess');
+        envlite_log(null, 'preflight: proc_open() is disabled; required to spawn subprocesses (site install, version probes, and Windows dev-server fallback)');
         exit(3);
     }
     // pcntl_exec is what envlite_run_dev_server calls on Unix to replace
