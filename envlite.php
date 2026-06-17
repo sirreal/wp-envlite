@@ -14,10 +14,11 @@ function envlite_help_text(): string {
 		  up [--port=N] [--no-serve]
 		      Set up the checkout and start the dev server: writes config,
 		      installs the SQLite drop-in, runs wp_install() if needed, then
-			      launches `php -S`. Does NOT install npm/composer deps or build
-			      assets — run those yourself (npm ci && composer install &&
-			      npm run build:dev) to run phpunit and ensure the served site has built assets. After install,
-		      sign in at /wp-login.php with admin / password.
+		      launches `php -S`. Does NOT install npm/composer deps or build
+		      assets — run those yourself (npm ci && composer install &&
+		      npm run build:dev) to run phpunit and ensure the served site
+		      has built assets. After install, sign in at /wp-login.php
+		      with admin / password.
 
 		  clean
 		      Remove every file envlite created. Prompts before deleting;
