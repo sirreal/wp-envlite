@@ -128,13 +128,31 @@ function test_phase0_pcntl_exec_check_aborts_when_function_disabled() {
         'preflight error must name pcntl_exec; got: ' . substr($stderr, 0, 200));
 }
 
-function test_phase0_required_extensions_includes_existing_set() {
-    // gd is required by the WP core test bootstrap (phpunit.xml.dist sets
-    // WP_RUN_CORE_TESTS=1), so envlite must surface its absence at preflight.
-    foreach (['gd', 'pdo_sqlite', 'sqlite3', 'openssl', 'simplexml', 'zip'] as $ext) {
+function test_phase0_required_extensions_are_envlite_own_needs() {
+    // Only the extensions envlite itself uses are hard requirements:
+    // pdo_sqlite/sqlite3 (drop-in + site install), openssl (HTTPS fetches),
+    // zip (ZipArchive). pcntl is added on Unix (tested separately).
+    foreach (['pdo_sqlite', 'sqlite3', 'openssl', 'zip'] as $ext) {
         envlite_assert(
             in_array($ext, envlite_phase0_required_extensions(), true),
             "$ext must remain required"
+        );
+    }
+}
+
+function test_phase0_gd_and_simplexml_are_recommended_not_required() {
+    // gd (WP core test bootstrap) and simplexml (PHPStan/PHPCS) are needed
+    // for the dev workflow envlite no longer runs, so they were downgraded
+    // from hard requirements to preflight warnings. They must NOT be in the
+    // required set and MUST be in the recommended set.
+    foreach (['gd', 'simplexml'] as $ext) {
+        envlite_assert(
+            !in_array($ext, envlite_phase0_required_extensions(), true),
+            "$ext must no longer be a hard requirement"
+        );
+        envlite_assert(
+            in_array($ext, envlite_phase0_recommended_extensions(), true),
+            "$ext must be a recommended extension"
         );
     }
 }

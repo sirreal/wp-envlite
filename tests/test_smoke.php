@@ -1,7 +1,7 @@
 <?php
 function envlite_test_wp_tests_config_sample(): string {
     // Inline mimic of wp-tests-config-sample.php carrying exactly what
-    // envlite_phase6_render touches: the three test-db placeholders and
+    // envlite_phase3_render touches: the three test-db placeholders and
     // the bare WP_PHP_BINARY define that envlite pins to PHP_BINARY.
     return "<?php\n"
         . "define( 'DB_NAME',     'youremptytestdbnamehere' );\n"
@@ -13,7 +13,7 @@ function envlite_test_wp_tests_config_sample(): string {
 
 function envlite_test_make_fixture_repo(): string {
     $dir = envlite_test_tmpdir('smoke');
-    // Minimum tree to satisfy Phase 0's CWD check and Phases 5–7.
+    // Minimum tree to satisfy Phase 0's CWD check and Phases 2–4.
     mkdir("$dir/src/wp-includes", 0755, true);
     mkdir("$dir/tests/phpunit/includes", 0755, true);
     mkdir("$dir/src/wp-content/plugins/sqlite-database-integration", 0755, true);
@@ -24,7 +24,7 @@ function envlite_test_make_fixture_repo(): string {
     // exercised against realistic placeholder content.
     file_put_contents("$dir/wp-config-sample.php",       envlite_test_wp_config_sample());
     file_put_contents("$dir/wp-tests-config-sample.php", envlite_test_wp_tests_config_sample());
-    // Pre-stage the SQLite plugin so Phase 5 hits the skip-download branch.
+    // Pre-stage the SQLite plugin so Phase 2 hits the skip-download branch.
     file_put_contents(
         "$dir/src/wp-content/plugins/sqlite-database-integration/db.copy",
         "<?php\n// {SQLITE_IMPLEMENTATION_FOLDER_PATH}\nreturn 'stub';\n"
@@ -32,21 +32,21 @@ function envlite_test_make_fixture_repo(): string {
     return $dir;
 }
 
-function test_smoke_phases5_through_7_then_clean() {
+function test_smoke_phases2_through_4_then_clean() {
     $dir = envlite_test_make_fixture_repo();
 
     // Pre-record the plugin tree as envlite-owned AND record the pin SHA so
-    // Phase 5 takes the skip branch (manifest + db.copy + pin all required).
-    // Without the pin, phase 5 falls through to the HTTP download path and
+    // Phase 2 takes the skip branch (manifest + db.copy + pin all required).
+    // Without the pin, phase 2 falls through to the HTTP download path and
     // this test becomes network-dependent.
     $manifest = ['src/wp-content/plugins/sqlite-database-integration' => 'dir'];
     envlite_manifest_save($dir, $manifest);
-    envlite_state_save($dir, ['phase5.recorded_pin_sha' => ENVLITE_SQLITE_PLUGIN_SHA256]);
+    envlite_state_save($dir, ['phase2.recorded_pin_sha' => ENVLITE_SQLITE_PLUGIN_SHA256]);
 
-    // Drive Phases 5–7 with --force (no TTY in test).
-    envlite_phase5_install($dir, true);
-    envlite_phase6_install($dir, true);
-    envlite_phase7_install($dir, 8421, true);
+    // Drive Phases 2–4 with --force (no TTY in test).
+    envlite_phase2_install($dir, true);
+    envlite_phase3_install($dir, true);
+    envlite_phase4_install($dir, 8421, true);
 
     // Assert artifacts present.
     envlite_assert(is_file("$dir/src/wp-content/db.php"));
