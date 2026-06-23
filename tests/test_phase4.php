@@ -137,3 +137,16 @@ function test_phase4_render_normalizes_crlf_in_sample() {
     $out = envlite_phase4_render($sample, 8421, null);
     envlite_assert(strpos($out, "\r\n") === false, 'rendered config must be LF-only');
 }
+
+function test_phase4_render_injects_wp_auto_update_core_before_marker() {
+    $sample = envlite_test_wp_config_sample();
+    $out = envlite_phase4_render($sample, 8421, null);
+    $autoupdate = "define( 'WP_AUTO_UPDATE_CORE', false );";
+    $site       = "define( 'WP_SITEURL', 'http://127.0.0.1:8421' );";
+    $marker     = "/* That's all, stop editing! Happy publishing. */";
+    // Exactly one occurrence of the new define.
+    envlite_assert_eq(1, substr_count($out, $autoupdate));
+    // Positioned after WP_SITEURL and before the marker.
+    envlite_assert(strpos($out, $autoupdate) > strpos($out, $site), 'WP_AUTO_UPDATE_CORE must be after WP_SITEURL');
+    envlite_assert(strpos($out, $autoupdate) < strpos($out, $marker), 'WP_AUTO_UPDATE_CORE must be before marker');
+}

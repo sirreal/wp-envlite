@@ -793,12 +793,13 @@ Distinct from Phase 3: `src/wp-config.php` is loaded by `wp-load.php`;
    multiple (including the reshape case).
 5. Locate the literal marker
    `/* That's all, stop editing! Happy publishing. */` (appears exactly
-   once in the sample) and inject the following two lines immediately
+   once in the sample) and inject the following three lines immediately
    *before* it, separated by a blank line:
 
    ```
    define( 'WP_HOME',    'http://127.0.0.1:<PORT>' );
    define( 'WP_SITEURL', 'http://127.0.0.1:<PORT>' );
+   define( 'WP_AUTO_UPDATE_CORE', false );
    ```
 
    `<PORT>` is the value from Phase 1.
@@ -813,6 +814,12 @@ URLs in markup (admin links, redirects, REST endpoints). If they don't
 match the listening address (`http://127.0.0.1:<port>`), `wp-admin`
 redirects loop and asset URLs break. They go in the runtime config; the
 phpunit config doesn't care.
+
+**Why `WP_AUTO_UPDATE_CORE` matters:** WordPress can silently
+self-update core files in the background. On a dev box this is
+undesirable — it can change the tree unexpectedly and interfere with
+debugging. Setting `WP_AUTO_UPDATE_CORE` to `false` disables all
+automatic core updates.
 
 **Idempotency:** same manifest-anchored rule as Phase 3.
 

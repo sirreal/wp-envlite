@@ -1375,13 +1375,14 @@ function envlite_phase4_render(string $sample, int $port, ?string $saltsBlock): 
         );
     }
 
-    // 3. Inject WP_HOME / WP_SITEURL before the marker.
+    // 3. Inject WP_HOME / WP_SITEURL / WP_AUTO_UPDATE_CORE before the marker.
     $marker = "/* That's all, stop editing! Happy publishing. */";
     if (substr_count($cfg, $marker) !== 1) {
         throw new \RuntimeException("phase 4: expected exactly one marker line");
     }
     $inject = "define( 'WP_HOME',    'http://127.0.0.1:$port' );\n"
-            . "define( 'WP_SITEURL', 'http://127.0.0.1:$port' );\n\n";
+            . "define( 'WP_SITEURL', 'http://127.0.0.1:$port' );\n"
+            . "define( 'WP_AUTO_UPDATE_CORE', false );\n\n";
     $pos = strpos($cfg, $marker);
     return substr($cfg, 0, $pos) . $inject . substr($cfg, $pos);
 }
